@@ -54,7 +54,7 @@ client.background       $black
 
 # ---- apps / launchers -------------------------------------------------------
 ## app launcher (rofi)
-bindsym $mod+d exec --no-startup-id pkill rofi || rofi -show drun -modi drun,filebrowser,run,window -config $rofi_cfg
+bindsym $mod+d exec --no-startup-id "pkill rofi || rofi -show drun -modi drun,filebrowser,run,window -config $rofi_cfg"
 ## open terminal
 bindsym $mod+Return exec --no-startup-id $scripts/LaunchTerminal.sh
 ## file manager
@@ -86,7 +86,7 @@ bindsym $mod+Shift+e exec --no-startup-id $scripts/QuickSettings.sh
 ## rofi theme selector
 bindsym $mod+Ctrl+r exec --no-startup-id $scripts/RofiThemeSelector.sh
 ## rofi theme selector (modified)
-bindsym $mod+Ctrl+Shift+r exec --no-startup-id pkill rofi; $scripts/RofiThemeSelector-modified.sh
+bindsym $mod+Ctrl+Shift+r exec --no-startup-id "pkill rofi; $scripts/RofiThemeSelector-modified.sh"
 ## kitty theme selector
 bindsym $mod+Ctrl+k exec --no-startup-id $scripts/Kitty_themes.sh
 ## change oh-my-zsh theme

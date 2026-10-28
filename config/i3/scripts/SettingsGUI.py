@@ -22,6 +22,7 @@ SETTINGS_FILE = os.environ.get("I3DOTS_SETTINGS", os.path.join(CONFIG_DIR, "sett
 ALL = "__all__"          # key used for "all mice and touchpads"
 ROTATIONS = [("normal", "Landscape"), ("left", "Portrait (left)"),
              ("right", "Portrait (right)"), ("inverted", "Landscape (flipped)")]
+SCALES = [100, 125, 150, 175, 200, 250, 300]     # screen scale in percent
 DRY = False
 
 
@@ -115,6 +116,7 @@ class Output:
         self.cur_mode = None
         self.cur_rate = None
         self.rotate = "normal"
+        self.scale = 100
         self.x = 0
         self.y = 0
         self.w = 0
@@ -158,6 +160,10 @@ def parse_xrandr(text):
                     cur.cur_mode, cur.cur_rate = mode, rm.group(1)
             if mode not in cur.modes:
                 cur.modes[mode] = rates
+    for o in outs:
+        if o.enabled and o.cur_mode and o.w:
+            pct = 100.0 * out_size(o.cur_mode, o.rotate)[0] / o.w
+            o.scale = min(SCALES, key=lambda v: abs(v - pct))
     return outs
 
 
@@ -166,10 +172,14 @@ def mode_area(mode):
     return int(w) * int(h)
 
 
-def out_size(mode, rotate):
-    """Size of a screen on the desktop (width, height) after rotation."""
+def out_size(mode, rotate, scale=100):
+    """Size of a screen on the desktop (width, height) after rotation and scaling.
+    At 200% a 3840x2160 screen takes up 1920x1080 of desktop space."""
     w, h = (int(v) for v in mode.split("x"))
-    return (h, w) if rotate in ("left", "right") else (w, h)
+    w, h = (h, w) if rotate in ("left", "right") else (w, h)
+    if scale in SCALES and scale != 100:
+        w, h = round(w * 100 / scale), round(h * 100 / scale)
+    return (w, h)
 
 
 def overlaps(a, b):
@@ -241,6 +251,9 @@ def build_xrandr(outputs, cfg):
         rot = c.get("rotate", o.rotate)
         if rot not in [r for r, _ in ROTATIONS]:
             rot = o.rotate
+        scale = c.get("scale", o.scale)
+        if scale not in SCALES:
+            scale = o.scale
         cmd += ["--output", o.name, "--mode", mode]
         if rate:
             cmd += ["--rate", str(rate)]
@@ -248,10 +261,11 @@ def build_xrandr(outputs, cfg):
             pos = "%dx%d" % (int(c["x"]), int(c["y"])) if use_pos else "%dx0" % x
         except (KeyError, TypeError, ValueError):
             pos = "%dx0" % x
-        cmd += ["--rotate", rot, "--pos", pos]
+        k = "%.5f" % (100.0 / scale)
+        cmd += ["--rotate", rot, "--scale", "%sx%s" % (k, k), "--pos", pos]
         if c.get("primary"):
             cmd += ["--primary"]
-        x += out_size(mode, rot)[0]
+        x += out_size(mode, rot, scale)[0]
     return cmd
 
 
@@ -283,7 +297,7 @@ def snapshot_monitors():
     snap = {}
     for o in parse_xrandr(query(["xrandr", "--query"])):
         snap[o.name] = {"enabled": o.enabled, "mode": o.cur_mode, "rate": o.cur_rate,
-                        "rotate": o.rotate, "primary": o.primary, "x": o.x, "y": o.y}
+                        "rotate": o.rotate, "scale": o.scale, "primary": o.primary, "x": o.x, "y": o.y}
     return snap
 
 
@@ -917,6 +931,7 @@ def launch_gui(confirm=True):
     stack = Gtk.Stack()
     mon.pack_start(stack, True, True, 0)
     primary_group = None
+    scales = {}              # monitor name -> scale combo
 
     def enabled_names():
         return [o.name for o in outputs if widgets[o.name][0].get_active()]
@@ -924,7 +939,8 @@ def launch_gui(confirm=True):
     def size_of(name):
         en, res, hz, rot, pr = widgets[name]
         m = res.get_active_id()
-        return out_size(m, rot.get_active_id() or "normal") if m else (1920, 1080)
+        sc = scales[name].get_active_id()
+        return out_size(m, rot.get_active_id() or "normal", int(sc) if sc else 100) if m else (1920, 1080)
 
     def rect_of(name, at=None):
         x, y = at if at else pos[name]
@@ -1059,6 +1075,20 @@ def launch_gui(confirm=True):
         rot.set_active_id(sv.get("rotate", o.rotate))
         box.pack_start(row("Orientation", rot, 150), False, False, 0)
 
+        sc = Gtk.ComboBoxText()
+        for v in SCALES:
+            sc.append(str(v), "%d%%%s" % (v, "  (default)" if v == 100 else ""))
+        want = sv.get("scale", o.scale)
+        sc.set_active_id(str(want if want in SCALES else 100))
+        scales[o.name] = sc
+        box.pack_start(row("Scale", sc, 150), False, False, 0)
+        note = Gtk.Label(label="Makes everything bigger on this screen (good for high-resolution screens). "
+                               "Higher values look a little softer than a native resolution.")
+        note.set_xalign(0)
+        note.set_line_wrap(True)
+        note.get_style_context().add_class("dim-label")
+        box.pack_start(row("", note, 150), False, False, 0)
+
         pr = Gtk.RadioButton.new_with_label_from_widget(primary_group, "Make this the primary display")
         if primary_group is None:
             primary_group = pr
@@ -1093,6 +1123,7 @@ def launch_gui(confirm=True):
         en.connect("notify::active", changed)
         res.connect("changed", changed)
         rot.connect("changed", changed)
+        sc.connect("changed", changed)
         pr.connect("toggled", changed)
 
     canvas.remove(ghost)          # re-add last so the drop preview is drawn above the screens
@@ -1252,8 +1283,13 @@ def launch_gui(confirm=True):
         tc.set_resizable(True)
         if col == 1:
             tc.set_min_width(300)
-        tc.set_cell_data_func(cell, lambda _c, rend, model, it, col=col: rend.set_property(
-            "weight", 700 if model[it][3] else 400) or rend.set_property("text", model[it][col] + (" *" if col == 1 and model[it][3] else "")))
+        def cell_data(_c, rend, model, it, _data=None, col=col):
+            if it is None:
+                return
+            row = model[it]
+            rend.set_property("weight", 700 if row[3] else 400)
+            rend.set_property("text", row[col] + (" *" if col == 1 and row[3] else ""))
+        tc.set_cell_data_func(cell, cell_data)
         kb_view.append_column(tc)
     kb_scroll = Gtk.ScrolledWindow()
     kb_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1520,6 +1556,7 @@ def launch_gui(confirm=True):
             px, py = pos[name] if name in names else (x0, y0)
             cfg[name] = {"enabled": en.get_active(), "mode": res.get_active_id(),
                          "rate": hz.get_active_id(), "rotate": rot.get_active_id(),
+                         "scale": int(scales[name].get_active_id() or 100),
                          "primary": pr.get_active(), "x": int(px - x0), "y": int(py - y0)}
         return cfg
 
@@ -1590,6 +1627,7 @@ def launch_gui(confirm=True):
                         res.set_active_id(b["mode"])
                         hz.set_active_id(b.get("rate"))
                     rot.set_active_id(b.get("rotate", "normal"))
+                    scales[name].set_active_id(str(b.get("scale", 100)))
                     en.set_active(b.get("enabled", True))
                     pr.set_active(b.get("primary", False))
                     if "x" in b:
