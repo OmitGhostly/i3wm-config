@@ -192,14 +192,17 @@ install_pokemon() {   # acxz/pokescript: the shiny Mimikyu sprite shown by fastf
 install_shell_hook() {
   [ "$do_pokemon" -eq 1 ] || return 0
   local rc marker='# i3wm-dots: pokemon fastfetch'
-  local line='{ [ -n "$KITTY_WINDOW_ID" ] || [ "$TERM_PROGRAM" = ghostty ]; } && [ -x "$HOME/.config/i3/scripts/PokeFetch.sh" ] && "$HOME/.config/i3/scripts/PokeFetch.sh"'
+  # I3DOTS_POKEFETCH (not exported) makes sure the greeting shows only once per shell, even if the line is sourced twice
+  local line='[ -z "$I3DOTS_POKEFETCH" ] && { [ -n "$KITTY_WINDOW_ID" ] || [ "$TERM_PROGRAM" = ghostty ]; } && [ -x "$HOME/.config/i3/scripts/PokeFetch.sh" ] && { I3DOTS_POKEFETCH=1; "$HOME/.config/i3/scripts/PokeFetch.sh"; }'
   for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
     [ -f "$rc" ] || continue
     if grep -qF "$marker" "$rc" 2>/dev/null; then
-      grep -qF 'TERM_PROGRAM' "$rc" && continue
-      say "upgrading the pokemon fastfetch greeting in $rc (kitty + ghostty)"
+      grep -qF 'I3DOTS_POKEFETCH' "$rc" && [ "$(grep -cF "$marker" "$rc")" -eq 1 ] && continue
+      say "refreshing the pokemon fastfetch greeting in $rc (one greeting per terminal)"
       [ "$dry" -eq 1 ] && continue
-      awk -v m="$marker" -v l="$line" 'f{print l; f=0; next} {print} index($0,m){f=1}' "$rc" > "$rc.i3tmp" && mv "$rc.i3tmp" "$rc"
+      # drop every old copy (marker line + the line after it), then add a single fresh one
+      awk -v m="$marker" 'skip{skip=0; next} index($0,m){skip=1; next} {print}' "$rc" > "$rc.i3tmp" \
+        && printf '\n%s\n%s\n' "$marker" "$line" >> "$rc.i3tmp" && mv "$rc.i3tmp" "$rc"
       continue
     fi
     say "adding the pokemon fastfetch greeting to $rc (kitty and ghostty only)"

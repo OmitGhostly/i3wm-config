@@ -13,7 +13,8 @@ set $rofi_cfg ~/.config/i3/rofi/config.rasi
 font pango:FantasqueSansM Nerd Font Mono 10
 floating_modifier $mod
 focus_follows_mouse yes
-default_orientation auto
+default_orientation horizontal
+workspace_layout default
 
 # ---- look: monochrome (starterpack-style gaps/borders, black & white) -----------
 default_border pixel 3
@@ -172,8 +173,8 @@ bindsym $mod+space floating toggle
 bindsym $mod+Ctrl+space floating enable, resize set 1100 650, move position center
 ## toggle layout (split/tabbed/stacking)
 bindsym $mod+$alt+l layout toggle all
-## layout: split (dwindle-like)
-bindsym $mod+$alt+1 layout toggle split
+## layout: side by side (the normal split layout)
+bindsym $mod+$alt+1 layout splith
 ## layout: stacking
 bindsym $mod+$alt+2 layout stacking
 ## layout: tabbed (monocle-like)

@@ -79,6 +79,8 @@ anything that could not be installed is listed at the end.
 
 - No bar or wrong monitors: run `~/.config/polybar/launch.sh`; logs are in `$XDG_RUNTIME_DIR/polybar-<monitor>.log`.
 - A keybind stopped working after editing: `i3 -C -c ~/.config/i3/config` shows the error; Keybindings > *Reset all to default* restores the shipped binds.
+- Windows stacked as tabs instead of side by side: press `SUPER+ALT+1` (side by side); `SUPER+ALT+2/3` and `SUPER+G` switch to stacked/tabbed on purpose. New windows always open side by side by default.
+- Mimikyu greeting shows twice: another line in `~/.zshrc` or `~/.bashrc` also prints a greeting. Find it with `grep -n 'fastfetch\|PokeFetch\|pokemon' ~/.zshrc ~/.bashrc` and delete the line that isn't marked `# i3wm-dots`. Re-running the installer leaves exactly one of ours.
 - Install problems: attach `~/.cache/i3wm-dots-install.log`; `./install.sh --restore` brings back your old configs.
 
 ## Compatibility
