@@ -95,7 +95,8 @@ detect_family() {
 FAMILY="$(detect_family)"
 
 # ---- bootstrap: script was run without the repo next to it (curl | bash) -------
-if [ ! -d "$here/config" ]; then
+# (piped from curl the script has no folder of its own: never treat the current directory as the repo by accident)
+if [ ! -f "$here/install.sh" ] || [ ! -f "$here/config/i3/config" ]; then
   say "repository files not found next to the script - fetching them"
   if ! command -v git >/dev/null 2>&1; then
     case "$FAMILY" in
@@ -114,13 +115,16 @@ fi
 
 # ---- restore --------------------------------------------------------------------
 if [ "$do_restore" -eq 1 ]; then
+  restored=0
   for d in "$here"/config/*/; do
     name="$(basename "$d")"
     latest="$(ls -d "$cfg/$name".bak-* 2>/dev/null | sort | tail -n1 || true)"
     if [ -n "$latest" ]; then
       run rm -rf "${cfg:?}/$name"; run mv "$latest" "$cfg/$name"; say "restored $name from $(basename "$latest")"
+      restored=$((restored + 1))
     fi
   done
+  [ "$restored" -gt 0 ] || say "no backups (*.bak-*) found in $cfg - nothing to restore"
   exit 0
 fi
 
@@ -140,13 +144,13 @@ packages_for() {
                   xprop|/usr/bin/xprop xdpyinfo|/usr/bin/xdpyinfo setxkbmap|/usr/bin/setxkbmap xinput|/usr/bin/xinput
                   network-manager-applet thunar polkit-gnome libnotify|/usr/bin/notify-send
                   libqalculate|/usr/bin/qalc google-noto-color-emoji-fonts|google-noto-emoji-color-fonts
-                  swappy python3-gobject gtk3 $common" ;;
+                  swappy python3-gobject gtk3 glx-utils|/usr/bin/glxinfo $common" ;;
     arch)   echo "i3-wm xorg-server xorg-xset xorg-xrdb xorg-xsetroot adwaita-icon-theme xorg-xrandr xorg-xprop xorg-xdpyinfo xorg-setxkbmap xorg-xinput
-                  network-manager-applet thunar polkit-gnome libnotify libqalculate swappy
-                  noto-fonts-emoji python-gobject gtk3 $common" ;;
+                  network-manager-applet thunar polkit-gnome libnotify libqalculate swappy bluez-utils
+                  noto-fonts-emoji python-gobject gtk3 mesa-utils $common" ;;
     debian) echo "i3 xserver-xorg x11-xserver-utils x11-utils x11-xkb-utils xinput network-manager-gnome thunar
                   policykit-1-gnome|polkit-gnome|lxpolkit libnotify-bin qalc|libqalculate-utils
-                  fonts-noto-color-emoji python3-gi gir1.2-gtk-3.0 $common" ;;
+                  fonts-noto-color-emoji python3-gi gir1.2-gtk-3.0 mesa-utils $common" ;;
   esac
 }
 
@@ -283,6 +287,13 @@ install_packages() {
   fi
 
   install_ghostty
+
+  # Bluetooth needs its background service (the Bluetooth tab in the settings window and the bar icon use it)
+  if command -v bluetoothctl >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 \
+     && ! systemctl is-enabled bluetooth >/dev/null 2>&1; then
+    say "enabling the bluetooth service"
+    run $SUDO systemctl enable --now bluetooth || warn "could not enable bluetooth - run: sudo systemctl enable --now bluetooth"
+  fi
 }
 
 install_font() {
@@ -313,8 +324,16 @@ run mkdir -p "$cfg"
 for d in "$here"/config/*/; do
   name="$(basename "$d")"
   target="$cfg/$name"
+  keep_settings=""
   if [ -e "$target" ] || [ -L "$target" ]; then
-    if [ "$do_backup" -eq 1 ]; then
+    if [ -f "$target/.i3wm-dots-installed" ] && [ ! -L "$target" ]; then
+      # Our own earlier install: replace it in place. Do NOT make another backup, or
+      # --restore would give back the previous install instead of your original config.
+      if [ "$dry" -eq 0 ] && [ "$name" = i3 ] && [ -f "$target/settings.json" ]; then
+        keep_settings="$(mktemp)"; cp -a "$target/settings.json" "$keep_settings"
+      fi
+      run rm -rf "$target"
+    elif [ "$do_backup" -eq 1 ]; then
       run mv "$target" "$target.bak-$stamp"; echo "   backup: $name -> $name.bak-$stamp"
     else
       run rm -rf "$target"
@@ -322,9 +341,14 @@ for d in "$here"/config/*/; do
   fi
   run mkdir -p "$target"
   run cp -a "$d." "$target/" || die "could not copy $name to $target"
+  [ "$dry" -eq 0 ] && : > "$target/.i3wm-dots-installed"
   # keep what the settings window saved (mouse, monitors, opacity, gaps, bar) across re-installs
-  if [ "$name" = i3 ] && [ "$dry" -eq 0 ] && [ -f "$target.bak-$stamp/settings.json" ]; then
-    cp -a "$target.bak-$stamp/settings.json" "$target/settings.json"
+  if [ "$name" = i3 ] && [ "$dry" -eq 0 ]; then
+    if [ -n "$keep_settings" ]; then
+      cp -a "$keep_settings" "$target/settings.json"; rm -f "$keep_settings"
+    elif [ -f "$target.bak-$stamp/settings.json" ]; then
+      cp -a "$target.bak-$stamp/settings.json" "$target/settings.json"
+    fi
   fi
 done
 
@@ -393,7 +417,7 @@ cat <<MSG
 
 Done.  $how
   - SUPER+H shows every keybind.  SUPER+W picks a wallpaper.
-  - SUPER+ALT+M opens Settings (mouse and cursor, monitors, window opacity, gaps, bar position/monitors).
+  - SUPER+ALT+M opens Settings (mouse, displays, appearance, accent colour, terminal themes, keybindings, Bluetooth, Wi-Fi).
   - Terminal: Ghostty (kitty if Ghostty could not be installed). Change it in ~/.config/i3/defaults.conf
   - Your old desktop is untouched - pick it again at the login screen any time.
   - Undo the dotfiles:  ./install.sh --restore

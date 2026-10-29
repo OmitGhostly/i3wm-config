@@ -45,8 +45,10 @@ set $dark  #1c1c1c
 set $line  #303030
 set $grey  #8c8c8c
 set $white #ffffff
+# the accent colour (white = monochrome). The Settings window's Colors tab changes this line.
+set $accent #ffffff
 #                       border  background text    indicator child_border
-client.focused          $white  $white     $black  $white    $white
+client.focused          $accent $accent    $black  $accent   $accent
 client.focused_inactive $line   $dark      $grey   $line     $line
 client.unfocused        $line   $black     $grey   $line     $line
 client.urgent           $grey   $grey      $black  $grey     $grey
@@ -99,7 +101,7 @@ bindsym $mod+Shift+Return exec --no-startup-id $scripts/Dropterminal.sh
 ## display layout tool (arandr)
 bindsym $mod+$alt+d exec --no-startup-id arandr
 
-## settings window (mouse speed/acceleration, monitor resolution/refresh/orientation)
+## settings window (mouse, displays, appearance, colors, themes, keybinds, Bluetooth, Wi-Fi)
 bindsym $mod+$alt+m exec --no-startup-id $scripts/SettingsGUI.py
 
 # ---- wallpaper / look toggles -------------------------------------------------
@@ -403,7 +405,7 @@ for_window [class="^(mpv|vlc)$"] border pixel 0
 exec --no-startup-id dbus-update-activation-environment --systemd DISPLAY XAUTHORITY
 exec --no-startup-id ~/.config/i3/scripts/Input.sh
 exec --no-startup-id ~/.config/i3/scripts/Polkit.sh
-exec --no-startup-id picom --config ~/.config/picom/picom.conf -b
+exec --no-startup-id ~/.config/i3/scripts/Picom.sh
 exec --no-startup-id dunst
 exec --no-startup-id ~/.config/i3/scripts/Wallpaper.sh --restore
 exec --no-startup-id nm-applet
@@ -412,6 +414,8 @@ exec --no-startup-id ~/.config/i3/scripts/ClipDaemon.sh
 # saved mouse / monitor settings (written by the settings window), then re-draw the bar for the new layout
 exec --no-startup-id sh -c '~/.config/i3/scripts/SettingsGUI.py --apply; sleep 1; ~/.config/polybar/launch.sh'
 exec --no-startup-id ~/.config/i3/scripts/Nightlight.sh init
+# game mode never survives a logout (its gaps/compositor changes are gone too)
+exec --no-startup-id rm -f ~/.cache/i3/gamemode
 exec --no-startup-id ~/.config/i3/scripts/first-run.sh
 # re-launched on every reload so the bar picks up new colors / monitors
 exec_always --no-startup-id ~/.config/polybar/launch.sh

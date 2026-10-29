@@ -6,6 +6,9 @@
 #  SPDX-License-Identifier: GPL-3.0-or-later
 # ==================================================
 # Kitty Themes Source https://github.com/dexpota/kitty-themes #
+# only one copy of this picker at a time (two would edit the same config file at once)
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/i3dots-$(id -u)-$(basename "$0").lock"
+flock -n 9 || exit 0
 
 # Define directories and variables
 kitty_themes_DiR="${XDG_CONFIG_HOME:-$HOME/.config}/kitty/kitty-themes" # Kitty Themes Directory

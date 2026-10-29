@@ -93,7 +93,7 @@ play_online_music() {
   }
   music_playing && stop_music
   notification "Now Playing:" "$choice"
-  mpv --no-video --shuffle "$link"
+  mpv --no-video --shuffle -- "$link"
 }
 
 # Manage online music list (add, remove, view)
@@ -110,6 +110,12 @@ manage_music() {
     url=$(rofi -dmenu -lines 0 -config "$rofi_theme_menu" \
       -theme-str 'entry { placeholder: "🔗 Enter Music URL"; }')
     [[ -z "$url" ]] && return
+    # titles cannot contain the "|" separator, and a URL can never start with "-" (mpv would read it as an option)
+    name="${name//|/ }"
+    if [[ "$url" == -* ]]; then
+      notification "Not added" "that is not a valid link"
+      return
+    fi
     echo "$name|$url" >>"$music_list"
     notification "Added" "$name"
     ;;
@@ -117,7 +123,7 @@ manage_music() {
     entry=$(awk -F'|' '{print $1}' "$music_list" | rofi -dmenu -config "$rofi_theme_menu" \
       -theme-str 'entry { placeholder: "🗑️ Select Music to Remove"; }')
     [[ -z "$entry" ]] && return
-    grep -v "^${entry}|" "$music_list" >"$music_list.tmp" && mv "$music_list.tmp" "$music_list"
+    awk -F'|' -v n="$entry" '$1 != n' "$music_list" >"$music_list.tmp" && mv "$music_list.tmp" "$music_list"
     notification "Removed" "$entry"
     ;;
   "View List")

@@ -79,7 +79,7 @@ fi
 menu_entries="$(
   while IFS='|' read -r host user hostname; do
     [[ -n "${host}" ]] || continue
-    [[ -n "${user}" ]] || user="${USER}"
+    [[ -n "${user}" ]] || user="${USER:-$(id -un)}"
     [[ -n "${hostname}" ]] || hostname="${host}"
     printf '%s | %s@%s\n' "${host}" "${user}" "${hostname}"
   done <<< "${host_entries}"
@@ -102,16 +102,22 @@ if [[ -z "${selected_host}" ]]; then
   exit 0
 fi
 
+# the name comes from ~/.ssh/config: accept only plain host names (no shell characters, never an ssh option)
+if [[ ! "${selected_host}" =~ ^[A-Za-z0-9][A-Za-z0-9._@:-]*$ ]]; then
+  notify "Refusing to connect: unusual host name '${selected_host}'"
+  exit 1
+fi
+
 if command -v ghostty >/dev/null 2>&1; then
-  exec ghostty --title="SSH ${selected_host}" -e sh -lc "ssh ${selected_host}"
+  exec ghostty --title="SSH ${selected_host}" -e ssh -- "${selected_host}"
 fi
 
 if command -v kitty >/dev/null 2>&1; then
-  exec kitty --title "SSH ${selected_host}" sh -lc "ssh ${selected_host}"
+  exec kitty --title "SSH ${selected_host}" ssh -- "${selected_host}"
 fi
 
 if command -v alacritty >/dev/null 2>&1; then
-  exec alacritty -e sh -lc "ssh ${selected_host}"
+  exec alacritty -e ssh -- "${selected_host}"
 fi
 
 notify "No supported terminal found (kitty, ghostty, alacritty). Unable to start SSH session."

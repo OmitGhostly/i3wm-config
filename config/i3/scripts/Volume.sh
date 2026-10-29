@@ -126,7 +126,7 @@ get_mic_volume() {
 notify_mic_user() {
     local muted="$(pamixer --default-source --get-mute)"
     local level="$(pamixer --default-source --get-volume)"
-    local icon message
+    local icon
 
     if [[ "$muted" == "true" || "$level" -eq 0 ]]; then
         icon="$iDIR/microphone-mute.png"

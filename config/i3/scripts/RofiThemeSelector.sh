@@ -6,6 +6,9 @@
 #  SPDX-License-Identifier: GPL-3.0-or-later
 # ==================================================
 # Rofi Themes - Script to preview and apply themes by live-reloading the config.
+# only one copy of this picker at a time (two would edit the same config file at once)
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/i3dots-$(id -u)-$(basename "$0").lock"
+flock -n 9 || exit 0
 
 # --- Configuration ---
 ROFI_THEMES_DIR_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/i3/rofi/themes"
@@ -47,7 +50,7 @@ apply_rofi_theme_to_config() {
   cp "$ROFI_CONFIG_FILE" "$temp_rofi_config_file"
 
   # Comment out any existing @theme entry
-  sed -i -E 's/^(\s*@theme)/\\/\\/\1/' "$temp_rofi_config_file"
+  sed -i -E 's|^([[:space:]]*@theme)|//\1|' "$temp_rofi_config_file"
 
   # Add the new @theme entry at the end of the file
   echo "@theme \"$theme_path_with_tilde\"" >>"$temp_rofi_config_file"
@@ -58,11 +61,12 @@ apply_rofi_theme_to_config() {
 
   # Prune old commented-out theme lines to prevent clutter
   local max_lines=10
-  local total_lines=$(grep -c '^//\s*@theme' "$ROFI_CONFIG_FILE")
+  local total_lines
+  total_lines=$(grep -cE '^[[:space:]]*//[[:space:]]*@theme' "$ROFI_CONFIG_FILE")
   if [ "$total_lines" -gt "$max_lines" ]; then
     local excess=$((total_lines - max_lines))
     for ((i = 1; i <= excess; i++)); do
-      sed -i '0,/^\s*\/\/@theme/s///' "$ROFI_CONFIG_FILE"
+      sed -i -E '0,\|^[[:space:]]*//[[:space:]]*@theme|{\|^[[:space:]]*//[[:space:]]*@theme|d}' "$ROFI_CONFIG_FILE"
     done
   fi
 

@@ -4,6 +4,18 @@
 cfgdir="${XDG_CONFIG_HOME:-$HOME/.config}"
 cfg="$cfgdir/fastfetch/config-pokemon.jsonc"
 command -v fastfetch >/dev/null || exit 0
+# Greet only once per terminal window, no matter how many times this is called (a duplicated line in .zshrc,
+# a shell that restarts itself, a prompt theme that re-reads the rc file...). The key is the terminal's session.
+sid=$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')
+if [ -n "$sid" ]; then
+  started=$(ps -o lstart= -p "$sid" 2>/dev/null | tr -c 'A-Za-z0-9' '_')
+  lockdir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/i3dots-pokefetch-$UID"
+  mkdir -p "$lockdir" 2>/dev/null && chmod 700 "$lockdir" 2>/dev/null
+  find "$lockdir" -type f -mtime +1 -delete 2>/dev/null
+  mark="$lockdir/$sid-$started"
+  [ -e "$mark" ] && exit 0
+  : > "$mark"
+fi
 for sprite in \
     "${POKESCRIPT_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/pokescript}/colorscripts/shiny/mimikyu.txt" \
     /usr/local/opt/pokemon-colorscripts/colorscripts/shiny/mimikyu.txt \

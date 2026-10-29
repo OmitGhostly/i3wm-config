@@ -6,6 +6,6 @@ on()  { redshift -P -O "$temp" >/dev/null 2>&1; echo on > "$state"; }
 off() { redshift -x >/dev/null 2>&1; echo off > "$state"; }
 case "$1" in
   toggle) if [ "$(cat "$state" 2>/dev/null)" = on ]; then off; notify-send -u low "Night light" "off"; else on; notify-send -u low "Night light" "on (${temp}K)"; fi ;;
-  init)   [ "$(cat "$state" 2>/dev/null)" = on ] && on ;;
+  init)   if [ "$(cat "$state" 2>/dev/null)" = on ]; then on; fi ;;
   status) if [ "$(cat "$state" 2>/dev/null)" = on ]; then echo "󰖔 ${temp}K"; else echo "󰖙"; fi ;;
 esac

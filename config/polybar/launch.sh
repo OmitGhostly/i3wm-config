@@ -3,12 +3,17 @@
 # Position (top/bottom) and monitor choice come from the settings window (~/.config/i3/settings.json).
 exec 9>"${XDG_RUNTIME_DIR:-/tmp}/polybar-launch.lock"
 flock 9   # one launch at a time (the settings window and i3 may both ask)
-pkill -x polybar 2>/dev/null
+pkill -u "$UID" -x polybar 2>/dev/null
 while pgrep -u "$UID" -x polybar >/dev/null; do sleep 0.2; done
-BAR_BOTTOM=false; BAR_MONITORS=""
+BAR_BOTTOM=false; BAR_MONITORS=""; BAR_HEIGHT=38; BAR_FONT=13.5
+# crisp text: grayscale anti-aliasing with light hinting (applies to programs started afterwards too)
+command -v xrdb >/dev/null 2>&1 && printf 'Xft.antialias: 1\nXft.hinting: 1\nXft.hintstyle: hintslight\nXft.rgba: none\n' | xrdb -merge 2>/dev/null
 eval "$(python3 "${XDG_CONFIG_HOME:-$HOME/.config}/i3/scripts/SettingsGUI.py" --bar-env 2>/dev/null)"
 if [ "$BAR_BOTTOM" = true ]; then BORDER_BOTTOM=0; BORDER_TOP=1; else BORDER_BOTTOM=1; BORDER_TOP=0; fi
-export BAR_BOTTOM BORDER_BOTTOM BORDER_TOP
+BAR_FONT_SPEC="FantasqueSansM Nerd Font Mono:size=${BAR_FONT:-13.5};3"
+# bigger icon font (+3pt = +4px, still whole pixels) for the stay-awake mug
+BAR_ICON_SPEC="FantasqueSansM Nerd Font Mono:size=$(awk -v f="${BAR_FONT:-13.5}" 'BEGIN{printf "%g", f+3}');4"
+export BAR_BOTTOM BAR_HEIGHT BAR_FONT BAR_FONT_SPEC BAR_ICON_SPEC BORDER_BOTTOM BORDER_TOP
 all=$(polybar --list-monitors | cut -d: -f1)
 sel=""
 if [ -n "$BAR_MONITORS" ]; then

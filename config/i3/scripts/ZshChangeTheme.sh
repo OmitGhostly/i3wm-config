@@ -6,6 +6,9 @@
 #  SPDX-License-Identifier: GPL-3.0-or-later
 # ==================================================
 # Script for Oh my ZSH theme ( CTRL SHIFT O)
+# only one copy of this picker at a time (two would edit the same config file at once)
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/i3dots-$(id -u)-$(basename "$0").lock"
+flock -n 9 || exit 0
 
 # preview of theme can be view here: https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
 # after choosing theme, TTY need to be closed and re-open
@@ -169,6 +172,11 @@ main() {
         notify-send -i "$iDIR/ja.png" "Theme selected:" "$choice"
     fi
 
+    # a theme name is a plain file name; refuse anything that could break out of the sed expression
+    if [[ ! "$theme_to_set" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+        notify-send -i "$iDIR/error.png" "OMZ theme" "refusing unusual theme name"
+        exit 1
+    fi
     if [ -f "$zsh_path" ]; then
         sed -i "s/^$var_name=.*/$var_name=\"$theme_to_set\"/" "$zsh_path"
         notify-send -i "$iDIR/ja.png" "OMZ theme" "applied. restart your terminal"

@@ -20,5 +20,5 @@ case "$1" in
     pkill rofi 2>/dev/null
     sel=$(list | while read -r p; do printf '%s\0icon\x1f%s\n' "$(basename "$p")" "$p"; done |
           rofi -dmenu -i -show-icons -p "Wallpaper" -config "$cfg/rofi/config-wallpaper.rasi")
-    [ -n "$sel" ] && set_wall "$(list | grep -F -m1 "/$sel")" ;;
+    [ -n "$sel" ] && set_wall "$(list | awk -F/ -v s="$sel" '$NF==s{print; exit}')" ;;
 esac

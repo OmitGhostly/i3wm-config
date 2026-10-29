@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""i3wm-dots settings: mouse speed/acceleration, mouse cursor, window opacity (picom), gaps and per-monitor resolution, refresh rate, orientation.
+"""i3wm-dots settings window: mouse and cursor, displays (resolution, refresh rate, orientation, scale, layout),
+appearance (window/terminal opacity, gaps, bar), accent colour, terminal themes, keybindings, Bluetooth and Wi-Fi.
 
   SettingsGUI.py            open the settings window
   SettingsGUI.py --bar-env  print the saved bar position/monitors as shell variables (used by polybar/launch.sh)
   SettingsGUI.py --apply    apply the saved settings (run at every i3 start, no GTK needed)
   SettingsGUI.py --dry-run  with --apply: print the commands instead of running them
 
-Changes are saved to ~/.config/i3/settings.json and applied immediately with xinput / xrandr.
-No root needed.  Requires: python3, python3-gobject (GTK 3), xinput, xrandr.
+Changes are saved to ~/.config/i3/settings.json and applied immediately.
+No root needed.  Requires: python3, python3-gobject (GTK 3), xinput, xrandr (bluetoothctl / nmcli for those tabs).
 """
 import json
 import os
@@ -34,7 +35,7 @@ def run(cmd, check=False):
         return ""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.TimeoutExpired) as e:
+    except (OSError, subprocess.TimeoutExpired):
         if check:
             raise
         return ""
@@ -60,11 +61,123 @@ def load_settings():
     if not isinstance(data, dict):
         data = {}
     # a hand-edited or damaged file must never crash the login-time apply: wrong types are dropped
-    for key in ("mouse", "monitors", "opacity", "gaps", "bar", "cursor", "apps", "keybinds"):
+    for key in ("mouse", "monitors", "opacity", "gaps", "bar", "cursor", "apps", "keybinds", "themes", "colors"):
         if key in data and not isinstance(data[key], dict):
             del data[key]
+    sanitize_settings(data)
     data.setdefault("mouse", {})
     data.setdefault("monitors", {})
+    return data
+
+
+def _num(v, lo, hi, kind=int):
+    """v as a number clamped to [lo, hi], or None when it is not a usable number."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+        return None
+    return max(lo, min(hi, kind(v)))
+
+
+def sanitize_settings(data):
+    """Keep only well-formed values: a hand-edited or damaged settings.json can never crash the window,
+    reach a config file or a command. Anything unexpected is dropped and the default is used instead."""
+    def clean(key, fn):
+        if key in data:
+            data[key] = fn(data[key])
+
+    def mouse(m):
+        out = {}
+        for name, c in m.items():
+            if isinstance(name, str) and isinstance(c, dict):
+                sp = _num(c.get("speed", 0.0), -1.0, 1.0, float)
+                out[name] = {"speed": 0.0 if sp is None else sp, "accel": bool(c.get("accel", True))}
+        return out
+
+    def monitors(m):
+        out = {}
+        for name, c in m.items():
+            if not (isinstance(name, str) and isinstance(c, dict)):
+                continue
+            o = {}
+            if isinstance(c.get("enabled"), bool):
+                o["enabled"] = c["enabled"]
+            if isinstance(c.get("mode"), str) and re.fullmatch(r"\d{2,5}x\d{2,5}", c["mode"]):
+                o["mode"] = c["mode"]
+            if isinstance(c.get("rate"), str) and re.fullmatch(r"\d{1,3}(\.\d{1,3})?", c["rate"]):
+                o["rate"] = c["rate"]
+            if c.get("rotate") in [r for r, _ in ROTATIONS]:
+                o["rotate"] = c["rotate"]
+            if c.get("scale") in SCALES and not isinstance(c.get("scale"), bool):
+                o["scale"] = int(c["scale"])
+            if isinstance(c.get("primary"), bool):
+                o["primary"] = c["primary"]
+            x, y = _num(c.get("x"), -32768, 32767), _num(c.get("y"), -32768, 32767)
+            if x is not None and y is not None:
+                o["x"], o["y"] = x, y
+            out[name] = o
+        return out
+
+    def opacity(c):
+        out = {}
+        for k in ("active", "inactive", "terminal"):
+            v = _num(c.get(k), -1e9, 1e9)
+            if v is not None and 20 <= v <= 100:      # out of range = damaged: use the default, not the extreme
+                out[k] = v
+        return out
+
+    def gaps(c):
+        out = {}
+        for k in ("inner", "outer"):
+            v = _num(c.get(k), 0, 100)
+            if v is not None:
+                out[k] = v
+        if isinstance(c.get("smart"), bool):
+            out["smart"] = c["smart"]
+        return out
+
+    def bar(c):
+        out = {}
+        if c.get("position") in ("top", "bottom"):
+            out["position"] = c["position"]
+        if c.get("size") in BAR_SIZES:
+            out["size"] = c["size"]
+        mons = c.get("monitors")
+        if isinstance(mons, list) and mons and all(isinstance(n, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,32}", n) for n in mons):
+            out["monitors"] = mons
+        else:
+            out["monitors"] = None
+        return out
+
+    def cursor(c):
+        out = {}
+        if isinstance(c.get("theme"), str) and re.fullmatch(r"[A-Za-z0-9 ._+-]{1,80}", c["theme"]):
+            out["theme"] = c["theme"]
+        sz = _num(c.get("size"), 8, 256)
+        if sz is not None:
+            out["size"] = sz
+        return out
+
+    def apps(c):
+        return {k: v for k, v in c.items() if k in APP_SLOTS and isinstance(v, str) and SAFE_CMD.match(v)}
+
+    def keybinds(c):
+        out = {}
+        for bid, o in c.items():
+            if isinstance(bid, str) and isinstance(o, dict) and isinstance(o.get("key"), str) and KEY_RE.match(o["key"]):
+                d = o.get("default")
+                out[bid] = {"key": o["key"], "default": d if isinstance(d, str) and KEY_RE.match(d) else o["key"]}
+        return out
+
+    def themes(c):
+        return {k: v for k, v in c.items() if k in ("ghostty", "kitty") and isinstance(v, str)
+                and re.fullmatch(r"[^\"\\\n\r]{1,80}", v)}
+
+    def colors(c):
+        a = norm_accent(c.get("accent"))
+        return {"accent": a} if a and brightness(a) >= ACCENT_MIN_BRIGHT else {}
+
+    for key, fn in (("mouse", mouse), ("monitors", monitors), ("opacity", opacity), ("gaps", gaps), ("bar", bar),
+                    ("cursor", cursor), ("apps", apps), ("keybinds", keybinds), ("themes", themes), ("colors", colors)):
+        clean(key, fn)
     return data
 
 
@@ -92,6 +205,7 @@ def list_pointer_devices():
 
 
 def apply_mouse_device(name, speed, accel):
+    speed = max(-1.0, min(1.0, speed)) if speed == speed else 0.0      # libinput range; NaN -> default
     run(["xinput", "set-prop", name, "libinput Accel Speed", "%.2f" % speed])
     # profiles: (adaptive, flat). Acceleration off = flat.
     prof = ("1", "0") if accel else ("0", "1")
@@ -233,6 +347,8 @@ def build_xrandr(outputs, cfg):
     editor; without them the screens are laid out left to right."""
     cmd = ["xrandr"]
     enabled = [o for o in outputs if cfg.get(o.name, {}).get("enabled", True)]
+    if outputs and not enabled:
+        return cmd                         # never switch every screen off (a damaged file must not leave a black desktop)
     use_pos = bool(enabled) and all("x" in cfg.get(o.name, {}) and "y" in cfg.get(o.name, {}) for o in enabled)
     x = 0
     for o in sorted(outputs, key=lambda o: o.x):
@@ -258,8 +374,11 @@ def build_xrandr(outputs, cfg):
         if rate:
             cmd += ["--rate", str(rate)]
         try:
-            pos = "%dx%d" % (int(c["x"]), int(c["y"])) if use_pos else "%dx0" % x
-        except (KeyError, TypeError, ValueError):
+            px, py = (int(c["x"]), int(c["y"])) if use_pos else (x, 0)
+            if not (-32768 <= px <= 32767 and -32768 <= py <= 32767):
+                raise ValueError("position out of range")
+            pos = "%dx%d" % (px, py)
+        except (KeyError, TypeError, ValueError, OverflowError):
             pos = "%dx0" % x
         k = "%.5f" % (100.0 / scale)
         cmd += ["--rotate", rot, "--scale", "%sx%s" % (k, k), "--pos", pos]
@@ -324,8 +443,8 @@ def list_cursor_themes():
 
 def _set_ini_key(text, key, value):
     line = "%s=%s" % (key, value)
-    if re.search(r"^\s*%s\s*=.*$" % re.escape(key), text, re.M):
-        return re.sub(r"^\s*%s\s*=.*$" % re.escape(key), line, text, flags=re.M)
+    if re.search(r"^[ \t]*%s[ \t]*=.*$" % re.escape(key), text, re.M):
+        return re.sub(r"^[ \t]*%s[ \t]*=.*$" % re.escape(key), line, text, flags=re.M)
     if "[Settings]" not in text:
         text = "[Settings]\n" + text
     return text.replace("[Settings]", "[Settings]\n" + line, 1)
@@ -342,8 +461,9 @@ def _write_if_changed(path, text):
         print("write", path)
         return
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    with open(path + ".i3tmp", "w") as f:
         f.write(text)
+    os.replace(path + ".i3tmp", path)
 
 
 def apply_cursor(settings):
@@ -352,7 +472,7 @@ def apply_cursor(settings):
     theme = cfg.get("theme")
     if not theme:
         return
-    if not isinstance(theme, str) or not re.match(r"^[A-Za-z0-9 ._+-]+$", theme):
+    if not isinstance(theme, str) or not re.match(r"^[A-Za-z0-9 ._+-]+\Z", theme):
         return                                         # never put anything but a plain theme name into config files
     size = max(8, min(256, int(cfg.get("size", CURSOR_DEFAULT_SIZE))))
     _write_if_changed(os.path.expanduser("~/.icons/default/index.theme"),
@@ -379,22 +499,69 @@ def apply_cursor(settings):
 
 # ------------------------------------------------------------------ window opacity (picom)
 PICOM_CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "picom", "picom.conf")
-OPACITY_DEFAULT = {"active": 100, "inactive": 95}
+OPACITY_DEFAULT = {"active": 100, "inactive": 95, "terminal": 90}
+GHOSTTY_CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "ghostty", "config")
+KITTY_CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "kitty", "kitty.conf")
+
+
+def set_conf_line(path, pattern, line):
+    """Replace the (first) line matching `pattern` in a config file, or append `line`. True if the file changed."""
+    try:
+        with open(path) as f:
+            text = orig = f.read()
+    except OSError:
+        return False                                    # that terminal is not installed / configured
+    if re.search(pattern, text, re.M):
+        text = re.sub(pattern, line, text, count=1, flags=re.M)
+    else:
+        text += ("" if text.endswith("\n") or not text else "\n") + line + "\n"
+    if text == orig:
+        return False
+    if DRY:
+        print("write %s: %s" % (path, line))
+        return True
+    with open(path + ".i3tmp", "w") as f:
+        f.write(text)
+    os.replace(path + ".i3tmp", path)
+    return True
+
+
+def apply_terminal_opacity(settings):
+    """Background opacity of Ghostty and kitty (their own setting, so only the terminal gets see-through)."""
+    cfg = settings.get("opacity") or {}
+    try:
+        pct = int(cfg["terminal"])
+    except (KeyError, TypeError, ValueError):
+        return
+    val = "%.2f" % (min(100, max(20, pct)) / 100.0)
+    changed = set_conf_line(GHOSTTY_CONF, r"^[ \t]*background-opacity[ \t]*=.*$", "background-opacity = " + val)
+    if changed and not DRY:
+        subprocess.run(["pkill", "-USR2", "-x", "ghostty"], capture_output=True)       # Ghostty reloads its config
+    changed = set_conf_line(KITTY_CONF, r"^[ \t]*background_opacity[ \t].*$", "background_opacity " + val)
+    if changed and not DRY:
+        subprocess.run(["pkill", "-USR1", "-x", "kitty"], capture_output=True)         # kitty reloads its config
 
 
 def apply_opacity(settings, restart=False):
+    """Window opacity: picom's focused / unfocused values, and the terminal's own background opacity."""
+    apply_terminal_opacity(settings)
+    apply_picom_opacity(settings, restart)
+
+
+def apply_picom_opacity(settings, restart=False):
     """Write active-opacity / inactive-opacity into picom.conf; restart picom if the file changed."""
     cfg = settings.get("opacity")
     if not cfg or not os.path.exists(PICOM_CONF):
         return
-    vals = {"active-opacity": int(cfg.get("active", 100)) / 100.0,
-            "inactive-opacity": int(cfg.get("inactive", 95)) / 100.0}
+    # 20% is the floor: lower would make windows practically invisible
+    vals = {"active-opacity": min(100, max(20, int(cfg.get("active", 100)))) / 100.0,
+            "inactive-opacity": min(100, max(20, int(cfg.get("inactive", 95)))) / 100.0}
     with open(PICOM_CONF) as f:
         text = orig = f.read()
     for key, val in vals.items():
         line = "%s = %.2f;" % (key, val)
-        if re.search(r"^\s*%s\s*=.*$" % key, text, re.M):
-            text = re.sub(r"^\s*%s\s*=.*$" % key, line, text, flags=re.M)
+        if re.search(r"^[ \t]*%s[ \t]*=.*$" % key, text, re.M):
+            text = re.sub(r"^[ \t]*%s[ \t]*=.*$" % key, line, text, flags=re.M)
         else:
             text += "\n" + line + "\n"
     if text == orig:
@@ -402,12 +569,115 @@ def apply_opacity(settings, restart=False):
     if DRY:
         print("write %s: %s" % (PICOM_CONF, ", ".join("%s=%.2f" % kv for kv in vals.items())))
         return
-    with open(PICOM_CONF, "w") as f:
+    with open(PICOM_CONF + ".i3tmp", "w") as f:
         f.write(text)
+    os.replace(PICOM_CONF + ".i3tmp", PICOM_CONF)
     if restart and subprocess.run(["pgrep", "-x", "picom"], capture_output=True).returncode == 0:
-        subprocess.run(["pkill", "-x", "picom"])
-        subprocess.Popen(["picom", "--config", PICOM_CONF, "-b"],
+        subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "picom"])
+        subprocess.Popen([os.path.join(CONFIG_DIR, "scripts", "Picom.sh")],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+# ------------------------------------------------------------------ terminal themes (Ghostty, kitty)
+THEME_DEFAULT = {"ghostty": "mono", "kitty": "01-Wallust"}       # the shipped monochrome themes
+HEX_RE = re.compile(r"^#?([0-9a-fA-F]{6})\Z")
+_CFG_HOME = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+KITTY_THEME_DIR = os.path.join(_CFG_HOME, "kitty", "kitty-themes")
+GHOSTTY_THEME_DIRS = [os.path.join(_CFG_HOME, "ghostty", "themes"), "/usr/share/ghostty/themes",
+                      "/usr/local/share/ghostty/themes", "/opt/ghostty/share/ghostty/themes"]
+
+
+def _list_files(dirs, suffix=""):
+    found = {}
+    for d in dirs:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for n in names:
+            path = os.path.join(d, n)
+            if not os.path.isfile(path) or n.startswith("."):
+                continue
+            if suffix and not n.endswith(suffix):
+                continue
+            name = n[:-len(suffix)] if suffix else n
+            if re.fullmatch(r"[^\"\\\n\r]{1,80}", name):          # names that are safe to write into a config
+                found.setdefault(name, path)                      # the first folder wins (your own themes first)
+    return found
+
+
+def list_ghostty_themes():
+    return _list_files(GHOSTTY_THEME_DIRS)
+
+
+def list_kitty_themes():
+    return _list_files([KITTY_THEME_DIR], ".conf")
+
+
+def theme_label(kind, name):
+    if name == THEME_DEFAULT.get(kind):
+        return "Monochrome (default)"
+    return name.replace("_", " ") if kind == "kitty" else name
+
+
+def parse_theme_colors(kind, path):
+    """{'bg','fg','palette'[16]} as '#rrggbb' strings (missing values fall back to a dark default)."""
+    out = {"bg": "#000000", "fg": "#e6e6e6", "palette": ["#555555"] * 16}
+    try:
+        with open(path, errors="replace") as f:
+            lines = f.read().splitlines()[:400]
+    except OSError:
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if kind == "ghostty":
+            m = re.match(r"^(background|foreground)\s*=\s*(\S+)$", line)
+            n = re.match(r"^palette\s*=\s*(\d+)\s*=\s*(\S+)$", line)
+            key, val = (m.group(1), m.group(2)) if m else (None, None)
+            idx, pal = (int(n.group(1)), n.group(2)) if n else (None, None)
+        else:
+            m = re.match(r"^(background|foreground)\s+(\S+)$", line)
+            n = re.match(r"^color(\d+)\s+(\S+)$", line)
+            key, val = (m.group(1), m.group(2)) if m else (None, None)
+            idx, pal = (int(n.group(1)), n.group(2)) if n else (None, None)
+        if key:
+            h = HEX_RE.match(val)
+            if h:
+                out["bg" if key == "background" else "fg"] = "#" + h.group(1)
+        elif idx is not None and 0 <= idx < 16:
+            h = HEX_RE.match(pal)
+            if h:
+                out["palette"][idx] = "#" + h.group(1)
+    return out
+
+
+def current_theme(kind):
+    """The theme named in the terminal's config right now (or None)."""
+    try:
+        if kind == "ghostty":
+            with open(GHOSTTY_CONF) as f:
+                m = re.search(r'^[ \t]*theme[ \t]*=[ \t]*"?([^"\n]+?)"?[ \t]*$', f.read(), re.M)
+        else:
+            with open(KITTY_CONF) as f:
+                m = re.search(r"^[ \t]*include[ \t]+\S*kitty-themes/([^/\s]+)\.conf[ \t]*$", f.read(), re.M)
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def apply_themes(settings):
+    """Write the chosen Ghostty / kitty theme into their configs and make running terminals reload."""
+    cfg = settings.get("themes") or {}
+    gh, ki = cfg.get("ghostty"), cfg.get("kitty")
+    if isinstance(gh, str) and gh in list_ghostty_themes():
+        if set_conf_line(GHOSTTY_CONF, r"^[ \t]*theme[ \t]*=.*$", 'theme = "%s"' % gh) and not DRY:
+            subprocess.run(["pkill", "-USR2", "-x", "ghostty"], capture_output=True)
+    if isinstance(ki, str) and ki in list_kitty_themes():
+        line = "include ~/.config/kitty/kitty-themes/%s.conf" % ki
+        if set_conf_line(KITTY_CONF, r"^[ \t]*include[ \t]+\S*kitty-themes/[^/\s]+\.conf[ \t]*$", line) and not DRY:
+            subprocess.run(["pkill", "-USR1", "-x", "kitty"], capture_output=True)
 
 
 # ------------------------------------------------------------------ gaps between windows (i3)
@@ -431,7 +701,8 @@ def apply_gaps(settings, reload=False):
     cfg = settings.get("gaps")
     if not cfg or not os.path.exists(I3_CONFIG):
         return
-    inner, outer = int(cfg.get("inner", 5)), int(cfg.get("outer", 0))
+    inner = min(100, max(0, int(cfg.get("inner", 5))))       # same range as the sliders
+    outer = min(100, max(0, int(cfg.get("outer", 0))))
     smart = "on" if cfg.get("smart", True) else "off"
     want = {"gaps inner": "gaps inner %d" % inner, "gaps outer": "gaps outer %d" % outer,
             "smart_gaps": "smart_gaps %s" % smart}
@@ -450,23 +721,257 @@ def apply_gaps(settings, reload=False):
     if DRY:
         print("write %s: %s" % (I3_CONFIG, "; ".join(want.values())))
         return
-    with open(I3_CONFIG, "w") as f:
+    with open(I3_CONFIG + ".i3tmp", "w") as f:
         f.write(text)
+    os.replace(I3_CONFIG + ".i3tmp", I3_CONFIG)
     if reload and smart_changed:
         run(["i3-msg", "reload"])
     else:
         run(["i3-msg", "gaps inner all set %d; gaps outer all set %d" % (inner, outer)])
 
 
+# ------------------------------------------------------------------ colour theme (accent colour for everything)
+# The look is black + greys + ONE accent colour (white = the original monochrome look). Changing the accent
+# rewrites every place that colour is used: window borders, bar, menus (rofi), notifications (dunst), lock
+# screen, stay-awake button, audio visualizer, terminal greeting and this window.
+ACCENT_DEFAULT = "#ffffff"
+ACCENT_PRESETS = [("mono", "Mono", "#ffffff"), ("cyan", "Cyan", "#00e5ff"), ("blue", "Blue", "#4d9fff"),
+                  ("green", "Green", "#3ddc84"), ("purple", "Purple", "#b388ff"), ("pink", "Pink", "#ff6ec7"),
+                  ("red", "Red", "#ff5252"), ("orange", "Orange", "#ff9f43"), ("yellow", "Yellow", "#ffd84d")]
+ACCENT_RE = re.compile(r"^#?([0-9a-fA-F]{6})\Z")
+ACCENT_MIN_BRIGHT = 0.35     # darker colours would be unreadable on the black background
+POLYBAR_COLORS = os.path.join(_CFG_HOME, "polybar", "colors.ini")
+ROFI_COLORS = os.path.join(CONFIG_DIR, "rofi", "colors-mono.rasi")
+DUNST_COLORS = os.path.join(_CFG_HOME, "dunst", "dunstrc.d", "50-mono.conf")
+ACCENT_CONF = os.path.join(CONFIG_DIR, "accent.conf")
+CAVA_CONF = os.path.join(_CFG_HOME, "cava", "config")
+FASTFETCH_CONF = os.path.join(_CFG_HOME, "fastfetch", "config-pokemon.jsonc")
+CAVA_STEPS = (0.10, 0.19, 0.29, 0.43, 0.55, 0.75, 0.90, 1.00)
+
+
+def norm_accent(value):
+    """'#RRGGBB' (lowercase) for a valid colour, else None. Anything that is not a plain 6-digit hex is rejected."""
+    if not isinstance(value, str):
+        return None
+    m = ACCENT_RE.match(value.strip())
+    return "#" + m.group(1).lower() if m else None
+
+
+def brightness(hex_color):
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255
+
+
+def shade(hex_color, t):
+    """The colour darkened towards black (t=1 keeps it)."""
+    return "#%02x%02x%02x" % tuple(round(int(hex_color[i:i + 2], 16) * t) for i in (1, 3, 5))
+
+
+def accent_palette(accent):
+    return {"A": accent, "S": shade(accent, 0.75), "D": shade(accent, 0.55)}
+
+
+def _rofi_colors(c):
+    return """/* Palette: black / greys + one accent colour. Written by the Settings window (Colors tab); safe to hand-edit. */
+* {
+active-background: #1c1c1c;
+active-foreground: %(A)s;
+normal-background: #000000;
+normal-foreground: #e6e6e6;
+urgent-background: %(A)s;
+urgent-foreground: #000000;
+
+alternate-active-background: #1c1c1c;
+alternate-active-foreground: %(A)s;
+alternate-normal-background: #0a0a0a;
+alternate-normal-foreground: #e6e6e6;
+alternate-urgent-background: %(A)s;
+alternate-urgent-foreground: #000000;
+
+selected-active-background: %(A)s;
+selected-active-foreground: #000000;
+selected-normal-background: %(A)s;
+selected-normal-foreground: #000000;
+selected-urgent-background: %(S)s;
+selected-urgent-foreground: #000000;
+
+background-color: #000000;
+background: rgba(0,0,0,0.92);
+foreground: #e6e6e6;
+border-color: %(A)s;
+
+color0: #000000;
+color1: #1c1c1c;
+color2: #303030;
+color3: #4a4a4a;
+color4: #6e6e6e;
+color5: #8c8c8c;
+color6: %(S)s;
+color7: #e6e6e6;
+color8: #8c8c8c;
+color9: %(A)s;
+color10: %(S)s;
+color11: #e6e6e6;
+color12: %(A)s;
+color13: #d9d9d9;
+color14: #f2f2f2;
+color15: %(A)s;
+}
+""" % c
+
+
+def _polybar_colors(c):
+    return """; Palette: black / greys + one accent colour. Written by the Settings window (Colors tab); safe to hand-edit.
+[colors]
+background = #f2000000
+background-alt = #1c1c1c
+foreground = #e6e6e6
+primary = %(A)s
+secondary = %(S)s
+alert = %(A)s
+disabled = #6e6e6e
+line = #303030
+""" % c
+
+
+def _dunst_colors(c):
+    return """[global]
+    frame_color = "%(A)s"
+    separator_color = frame
+[urgency_low]
+    background = "#000000f2"
+    foreground = "%(S)s"
+    frame_color = "#303030"
+[urgency_normal]
+    background = "#000000f2"
+    foreground = "#ffffff"
+    frame_color = "%(A)s"
+[urgency_critical]
+    background = "%(A)s"
+    foreground = "#000000"
+    frame_color = "%(A)s"
+""" % c
+
+
+def _accent_conf(c):
+    return ("# Colours used by the shell scripts (lock screen, bar buttons). Written by the Settings window.\n"
+            "ACCENT=%s\nACCENT_DIM=%s\nACCENT_MUTED=%s\n" % (c["A"][1:], c["S"][1:], c["D"][1:]))
+
+
+def _write_generated(path, text):
+    """Write a generated file only when it differs; returns True when it changed."""
+    path = os.path.realpath(path)          # keep a symlinked (stow-managed) config a symlink
+    try:
+        with open(path) as f:
+            if f.read() == text:
+                return False
+    except OSError:
+        pass
+    if DRY:
+        print("write", path)
+        return True
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".i3tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+    return True
+
+
+def _sub_in_file(path, pattern, repl, flags=re.M):
+    """Regex-replace inside an existing file (no-op when the file is missing). Returns True when it changed."""
+    path = os.path.realpath(path)
+    try:
+        with open(path) as f:
+            old = f.read()
+    except OSError:
+        return False
+    new = re.sub(pattern, repl, old, flags=flags)
+    if new == old:
+        return False
+    if DRY:
+        print("write", path)
+        return True
+    with open(path + ".i3tmp", "w") as f:
+        f.write(new)
+    os.replace(path + ".i3tmp", path)
+    return True
+
+
+def apply_colors(settings):
+    """Write the accent colour into every config that uses it, then reload i3 / notifications.
+    A lock makes two simultaneous applies (login + the Settings window) take turns instead of mixing colours."""
+    import fcntl
+    lock = None
+    try:
+        lock = open(os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "i3dots-colors-%d.lock" % os.getuid()), "w")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    except OSError:
+        lock = None                       # no lock available: still apply
+    try:
+        _apply_colors(settings)
+    finally:
+        if lock:
+            lock.close()
+
+
+def _apply_colors(settings):
+    cfg = settings.get("colors")
+    accent = norm_accent(cfg.get("accent")) if isinstance(cfg, dict) else None
+    if not accent or brightness(accent) < ACCENT_MIN_BRIGHT:
+        return
+    c = accent_palette(accent)
+    key = "white" if accent == ACCENT_DEFAULT else "38;2;%d;%d;%d" % tuple(int(accent[i:i + 2], 16) for i in (1, 3, 5))
+    errors = []
+    results = {}
+
+    def step(name, fn, *args):
+        """One file failing (say, read-only) must not leave the other files on the old colour."""
+        try:
+            results[name] = bool(fn(*args))
+        except OSError as e:
+            results[name] = False
+            errors.append("%s: %s" % (os.path.basename(args[0]), e))
+
+    def gen(name, path, text):
+        if os.path.isdir(os.path.dirname(path)):
+            step(name, _write_generated, path, text)
+    gen("polybar", POLYBAR_COLORS, _polybar_colors(c))
+    gen("rofi", ROFI_COLORS, _rofi_colors(c))
+    gen("dunst", DUNST_COLORS, _dunst_colors(c))
+    gen("accent", ACCENT_CONF, _accent_conf(c))
+    step("i3", _sub_in_file, I3_CONFIG, r"^set \$accent[ \t]+#[0-9a-fA-F]{6}[ \t]*$", lambda m: "set $accent %s" % accent)
+    step("cava", _sub_in_file, CAVA_CONF, r"^gradient_color_([1-8]) = .*$",
+         lambda m: "gradient_color_%s = '%s'" % (m.group(1), shade(accent, CAVA_STEPS[int(m.group(1)) - 1])))
+    step("fastfetch", _sub_in_file, FASTFETCH_CONF, r'("keyColor"\s*:\s*)"[^"]*"', lambda m: '%s"%s"' % (m.group(1), key))
+    changed = any(results.values())
+    dunst_changed = results.get("dunst", False)
+    if (not changed and not errors) or DRY:
+        return
+    if changed and dunst_changed:
+        run(["dunstctl", "reload"])
+    if changed:
+        run(["i3-msg", "reload"])     # re-reads the border colours and relaunches the bar with the new colours
+    if errors:
+        raise OSError("some colour files could not be written (%s)" % "; ".join(errors))
+
+
 # ------------------------------------------------------------------ top bar (polybar)
-BAR_DEFAULT = {"position": "top", "monitors": None}      # monitors None = every monitor
+BAR_DEFAULT = {"position": "top", "monitors": None, "size": "large"}   # monitors None = every monitor
+# name -> (bar height px, font size pt). Font sizes are chosen so the text is a whole number of pixels
+# tall at 96 dpi (10.5pt = 14px, 13.5pt = 18px, 16.5pt = 22px): whole-pixel text is the sharpest.
+BAR_SIZES = {"normal": (30, "10.5"), "large": (38, "13.5"), "xlarge": (44, "16.5")}
+BAR_SIZE_LABELS = [("normal", "Normal"), ("large", "Large (sharper text)"), ("xlarge", "Extra large")]
 
 
 def bar_env(settings):
     """Shell assignments for polybar/launch.sh."""
     bar = settings.get("bar") or {}
     mons = bar.get("monitors")
+    size = bar.get("size") if bar.get("size") in BAR_SIZES else BAR_DEFAULT["size"]
+    height, font = BAR_SIZES[size]
     lines = ["BAR_BOTTOM=%s" % ("true" if bar.get("position") == "bottom" else "false"),
+             "BAR_HEIGHT=%d" % height, "BAR_FONT=%s" % font,
              "BAR_MONITORS=%s" % shlex.quote(" ".join(mons) if mons else "")]
     return "\n".join(lines)
 
@@ -481,11 +986,237 @@ def apply_bar(settings):
         subprocess.Popen([launch], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+# ------------------------------------------------------------------ bluetooth (bluetoothctl / BlueZ)
+BT_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\Z")
+BT_HINT = ("Bluetooth is not set up on this computer. Install the BlueZ tools and start the service:\n"
+           "Fedora: sudo dnf install bluez   |   Arch: sudo pacman -S bluez bluez-utils   |   Debian/Ubuntu: sudo apt install bluez\n"
+           "then: sudo systemctl enable --now bluetooth")
+
+
+def bt_ctl(args, timeout=20, agent=None):
+    """Run bluetoothctl with a time limit. Returns (ok, output); never raises."""
+    exe = shutil.which("bluetoothctl")
+    if not exe:
+        return False, "bluetoothctl is not installed"
+    cmd = [exe] + (["--agent", agent] if agent else []) + list(args)
+    if DRY and args and args[0] not in ("show", "devices", "info"):
+        print("+", " ".join(shlex.quote(c) for c in cmd))
+        return True, ""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return False, "timed out"
+    except OSError as e:
+        return False, str(e)
+    return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+
+
+def bt_state():
+    """{'available', 'powered', 'blocked'} for the default adapter."""
+    ok, out = bt_ctl(["show"], timeout=8)
+    if not ok or "Powered:" not in out:
+        return {"available": False, "powered": False, "installed": bool(shutil.which("bluetoothctl"))}
+    return {"available": True, "installed": True, "powered": "Powered: yes" in out}
+
+
+def bt_devices():
+    """Every device BlueZ knows: [{'mac','name','paired','connected'}], paired ones first."""
+    ok, out = bt_ctl(["devices"], timeout=8)
+    found = []
+    for line in (out if ok else "").splitlines():
+        m = re.match(r"^Device\s+(\S+)\s*(.*)$", line.strip())
+        if not (m and BT_MAC_RE.match(m.group(1))):
+            continue
+        mac, name = m.group(1).upper(), m.group(2).strip()
+        _ok, info = bt_ctl(["info", mac], timeout=6)
+        found.append({"mac": mac, "name": name or mac,
+                      "paired": "Paired: yes" in info, "connected": "Connected: yes" in info})
+    return sorted(found, key=lambda d: (not d["paired"], not d["connected"], d["name"].lower()))
+
+
+def bt_power(on):
+    if on:
+        run_quiet = shutil.which("rfkill")
+        if run_quiet and not DRY:
+            subprocess.run([run_quiet, "unblock", "bluetooth"], capture_output=True, timeout=10)
+    ok, out = bt_ctl(["power", "on" if on else "off"], timeout=15)
+    return ok and "Failed" not in out, out
+
+
+def bt_scan(seconds=8):
+    """Look for nearby devices for a few seconds (they then show up in bt_devices)."""
+    return bt_ctl(["--timeout", str(int(seconds)), "scan", "on"], timeout=seconds + 8)
+
+
+def bt_action(action, mac):
+    """connect / disconnect / remove one device. Returns (ok, message)."""
+    if action not in ("connect", "disconnect", "remove") or not BT_MAC_RE.match(mac or ""):
+        return False, "invalid request"
+    ok, out = bt_ctl([action, mac], timeout=30)
+    good = {"connect": "Connection successful", "disconnect": "Successful disconnected",
+            "remove": "has been removed"}[action]
+    if DRY:
+        return True, ""
+    if good in out or (action == "remove" and "removed" in out.lower()):
+        return True, ""
+    last = [l for l in out.splitlines() if l.strip()][-1:]
+    return False, (last[0] if last else "no answer from bluetoothctl").strip()
+
+
+def bt_pair(mac):
+    """Pair, trust and connect (Just Works pairing: headphones, speakers, mice, game pads...)."""
+    if not BT_MAC_RE.match(mac or ""):
+        return False, "invalid address"
+    ok, out = bt_ctl(["pair", mac], timeout=45, agent="NoInputNoOutput")
+    if not DRY and "Pairing successful" not in out and "AlreadyExists" not in out and "Already" not in out:
+        last = [l for l in out.splitlines() if l.strip()][-1:]
+        return False, (last[0] if last else "pairing failed").strip() + \
+            " (keyboards that ask for a PIN: use the full Bluetooth manager)"
+    bt_ctl(["trust", mac], timeout=10)
+    return bt_action("connect", mac)
+
+
+# ------------------------------------------------------------------ wi-fi (NetworkManager / nmcli)
+NM_HINT = ("Wi-Fi is managed by NetworkManager, which was not found.\n"
+           "Fedora: sudo dnf install NetworkManager-wifi   |   Arch: sudo pacman -S networkmanager   |   Debian/Ubuntu: sudo apt install network-manager\n"
+           "then: sudo systemctl enable --now NetworkManager")
+
+
+def nm_ctl(args, timeout=30):
+    """Run nmcli with a time limit. Returns (ok, output); never raises."""
+    exe = shutil.which("nmcli")
+    if not exe:
+        return False, "nmcli is not installed"
+    cmd = [exe] + list(args)
+    is_read = bool(args) and (args[0] == "-t" or list(args) == ["radio", "wifi"])
+    if DRY and not is_read:
+        shown = ["***" if i and args[i - 1] == "password" else a for i, a in enumerate(args)]
+        print("+", "nmcli", " ".join(shlex.quote(c) for c in shown))
+        return True, ""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return False, "timed out"
+    except OSError as e:
+        return False, str(e)
+    return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+
+
+def nm_fields(line):
+    """Split one line of 'nmcli -t' output (':' separates fields, '\\:' and '\\\\' are escapes)."""
+    return [re.sub(r"\\(.)", r"\1", p) for p in re.split(r"(?<!\\):", line)]
+
+
+def nm_valid_ssid(ssid):
+    return isinstance(ssid, str) and 0 < len(ssid.encode("utf-8", "ignore")) <= 32 and not re.search(r"[\x00-\x1f]", ssid)
+
+
+def nm_valid_password(pw):
+    return isinstance(pw, str) and (8 <= len(pw) <= 63 or re.fullmatch(r"[0-9A-Fa-f]{64}", pw) is not None) \
+        and not re.search(r"[\x00-\x1f]", pw)
+
+
+def nm_state():
+    """{'available', 'enabled', 'iface'}: is there a Wi-Fi adapter, is the radio on, and its device name."""
+    ok, out = nm_ctl(["-t", "-f", "DEVICE,TYPE", "device"], timeout=8)
+    iface = ""
+    for line in (out if ok else "").splitlines():
+        f = nm_fields(line)
+        if len(f) >= 2 and f[1] == "wifi":
+            iface = f[0]
+            break
+    ok2, rad = nm_ctl(["radio", "wifi"], timeout=8)
+    return {"installed": bool(shutil.which("nmcli")), "available": bool(iface), "iface": iface,
+            "enabled": ok2 and rad.strip() == "enabled"}
+
+
+def nm_saved():
+    """Names of the Wi-Fi profiles NetworkManager remembers."""
+    ok, out = nm_ctl(["-t", "-f", "NAME,TYPE", "connection", "show"], timeout=8)
+    saved = set()
+    for line in (out if ok else "").splitlines():
+        f = nm_fields(line)
+        if len(f) >= 2 and f[-1] in ("802-11-wireless", "wifi"):
+            saved.add(":".join(f[:-1]))
+    return saved
+
+
+def nm_networks(rescan=False):
+    """Visible networks, one row per name: [{'ssid','signal','security','active','saved'}], best first."""
+    ok, out = nm_ctl(["-t", "-f", "IN-USE,SIGNAL,SECURITY,SSID", "device", "wifi", "list",
+                      "--rescan", "yes" if rescan else "no"], timeout=25)
+    saved = nm_saved()
+    nets = {}
+    for line in (out if ok else "").splitlines():
+        f = nm_fields(line)
+        if len(f) < 4:
+            continue
+        ssid = ":".join(f[3:])
+        if not ssid:
+            continue                                   # hidden networks have no name to show
+        try:
+            sig = int(f[1])
+        except ValueError:
+            sig = 0
+        n = {"ssid": ssid, "signal": sig, "security": f[2] if f[2] not in ("", "--") else "Open",
+             "active": f[0].strip() == "*", "saved": ssid in saved}
+        old = nets.get(ssid)
+        if not old or n["active"] or (not old["active"] and n["signal"] > old["signal"]):
+            nets[ssid] = n
+    return sorted(nets.values(), key=lambda n: (not n["active"], -n["signal"], n["ssid"].lower()))
+
+
+def nm_power(on):
+    if on and shutil.which("rfkill") and not DRY:
+        subprocess.run(["rfkill", "unblock", "wifi"], capture_output=True, timeout=10)
+    ok, out = nm_ctl(["radio", "wifi", "on" if on else "off"], timeout=15)
+    return ok, out
+
+
+def nm_last(out, default):
+    lines = [l.strip() for l in out.splitlines() if l.strip()]
+    return lines[-1] if lines else default
+
+
+def nm_connect(ssid, password=None, hidden=False, saved=False):
+    """Join a network. A remembered network just reconnects; a new one needs its password (open networks none)."""
+    if not nm_valid_ssid(ssid):
+        return False, "invalid network name"
+    if password is not None and not nm_valid_password(password):
+        return False, "the password must be 8 to 63 characters"
+    if saved and not password and not hidden:
+        ok, out = nm_ctl(["connection", "up", "id", ssid], timeout=45)
+    else:
+        args = ["device", "wifi", "connect", ssid]
+        if password:
+            args += ["password", password]
+        if hidden:
+            args += ["hidden", "yes"]
+        ok, out = nm_ctl(args, timeout=60)
+    if DRY or (ok and "success" in out.lower()):
+        return True, ""
+    return False, nm_last(out, "could not connect")
+
+
+def nm_disconnect(iface):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,32}", iface or ""):
+        return False, "no Wi-Fi device"
+    ok, out = nm_ctl(["device", "disconnect", iface], timeout=20)
+    return (True, "") if DRY or ok else (False, nm_last(out, "could not disconnect"))
+
+
+def nm_forget(ssid):
+    if not nm_valid_ssid(ssid):
+        return False, "invalid network name"
+    ok, out = nm_ctl(["connection", "delete", "id", ssid], timeout=20)
+    return (True, "") if DRY or ok else (False, nm_last(out, "could not forget the network"))
+
+
 # ------------------------------------------------------------------ keybindings (i3 config)
 BIND_RE = re.compile(r"^(\s*bindsym(?:\s+--\S+)*\s+)(\S+)(\s+)(.*?)\s*$")
 MODE_START_RE = re.compile(r"^mode\s+.*\{\s*$")
 KEYCAPTURE_MODE = "keycapture"
-KEY_RE = re.compile(r"^[A-Za-z0-9_$]+(\+[A-Za-z0-9_$]+)*$")
+KEY_RE = re.compile(r"^[A-Za-z0-9_$]+(\+[A-Za-z0-9_$]+)*\Z")
 
 
 def parse_binds(text):
@@ -607,7 +1338,7 @@ APP_SLOTS = {
                             "brave-browser", "vivaldi", "librewolf", "epiphany", "falkon", "qutebrowser", "microsoft-edge",
                             "microsoft-edge-stable", "zen-browser", "floorp", "waterfox", "opera"]},
 }
-SAFE_CMD = re.compile(r"^[A-Za-z0-9_./+ -]*$")      # custom commands: no quotes, $, ; | & or backticks
+SAFE_CMD = re.compile(r"^[A-Za-z0-9_./+ -]*\Z")      # custom commands: no quotes, $, ; | & or backticks
 
 
 def app_slot_for(cmd):
@@ -671,22 +1402,24 @@ def apply_apps(settings):
         if DRY:
             print("write %s: %s" % (DEFAULTS_CONF, ", ".join('%s="%s"' % kv for kv in apps.items())))
         else:
-            with open(DEFAULTS_CONF, "w") as f:
+            with open(DEFAULTS_CONF + ".i3tmp", "w") as f:
                 f.write(text)
+            os.replace(DEFAULTS_CONF + ".i3tmp", DEFAULTS_CONF)
     term = apps.get("term")
     if term and SAFE_CMD.match(term) and os.path.exists(ROFI_TERMINAL):
         with open(ROFI_TERMINAL) as f:
             rt = f.read()
         new = re.sub(r'^(\s*terminal:\s*)".*?";', lambda m: '%s"%s";' % (m.group(1), term.split()[0]), rt, count=1, flags=re.M)
         if new != rt and not DRY:
-            with open(ROFI_TERMINAL, "w") as f:
+            with open(ROFI_TERMINAL + ".i3tmp", "w") as f:
                 f.write(new)
+            os.replace(ROFI_TERMINAL + ".i3tmp", ROFI_TERMINAL)
     return changed
 
 
 def apply_all(settings):
     """Apply every saved setting. One failing step is reported but never stops the others."""
-    for step in (apply_mouse, apply_cursor, apply_monitors, apply_opacity, apply_gaps, apply_apps):
+    for step in (apply_mouse, apply_cursor, apply_monitors, apply_opacity, apply_themes, apply_colors, apply_gaps, apply_apps):
         try:
             step(settings)
         except Exception as e:  # noqa: BLE001 - login must not break on a bad setting
@@ -698,23 +1431,23 @@ def apply_all(settings):
 
 
 # ------------------------------------------------------------------ GUI
-CSS = b"""
+CSS_TEMPLATE = """
 * { font-family: "FantasqueSansM Nerd Font Mono", "Fantasque Sans Mono", monospace; font-size: 11pt;
     color: #e6e6e6; background-image: none; box-shadow: none; outline-style: none; text-shadow: none; }
-*:disabled, *:insensitive { opacity: 0.4; }
+*:disabled { opacity: 0.4; }
 treeview, treeview.view { background-color: #000000; color: #e6e6e6; }
-treeview.view:selected, treeview.view:selected:focus { background-color: #ffffff; color: #000000; }
+treeview.view:selected, treeview.view:selected:focus { background-color: @A@; color: #000000; }
 treeview header button { background-color: #1c1c1c; color: #8c8c8c; border: none; border-radius: 0; padding: 6px 10px; }
 entry, searchentry { background-color: #141414; color: #e6e6e6; border: 1px solid #303030; border-radius: 0; padding: 6px 8px; }
 window, dialog, box, notebook, notebook > stack, scrolledwindow, viewport { background-color: #000000; }
 notebook > header { background-color: #000000; border: none; border-bottom: 1px solid #303030; }
 notebook > header > tabs > tab { padding: 8px 22px; color: #6e6e6e; background-color: #000000; border: none; border-radius: 0; }
-notebook > header > tabs > tab:checked { color: #000000; background-color: #ffffff; }
+notebook > header > tabs > tab:checked { color: #000000; background-color: @A@; }
 notebook > header > tabs > tab:checked label { color: #000000; }
 frame > border { border: 1px solid #303030; border-radius: 0; }
-frame > label { color: #ffffff; font-weight: bold; }
+frame > label { color: @A@; font-weight: bold; }
 label.dim { color: #8c8c8c; }
-label.title { color: #ffffff; font-size: 14pt; }
+label.title { color: @A@; font-size: 14pt; }
 label.status { color: #8c8c8c; }
 .canvas { background-color: #0a0a0a; border: 1px solid #303030; }
 .mon { background-color: #303030; border: 1px solid #8c8c8c; }
@@ -722,30 +1455,38 @@ label.status { color: #8c8c8c; }
 .mon label { color: #e6e6e6; }
 .mon .mon-num { font-size: 22pt; font-weight: bold; }
 .mon .mon-name { font-size: 9pt; color: #8c8c8c; }
-.mon-sel { background-color: #ffffff; border-color: #ffffff; }
+.mon-sel { background-color: @A@; border-color: @A@; }
 .mon-sel label, .mon-sel .mon-num, .mon-sel .mon-name { color: #000000; }
-.mon-ghost { background-color: rgba(255,255,255,0.18); border: 2px solid #bfbfbf; }
-.ident { font-size: 72pt; font-weight: bold; color: #000000; background-color: #ffffff; padding: 10px 40px; }
+.mon-ghost { background-color: @G@; border: 2px solid @S@; }
+.ident { font-size: 72pt; font-weight: bold; color: #000000; background-color: @A@; padding: 10px 40px; }
 button { background-color: #1c1c1c; color: #e6e6e6; border: 1px solid #303030; border-radius: 0; padding: 6px 20px; }
 button:hover { background-color: #303030; }
-button.suggested-action { background-color: #ffffff; color: #000000; font-weight: bold; }
+button.suggested-action { background-color: @A@; color: #000000; font-weight: bold; }
 button.suggested-action label { color: #000000; }
-button.suggested-action:hover { background-color: #bfbfbf; }
+button.suggested-action:hover { background-color: @S@; }
 combobox button, combobox button * { background-color: #1c1c1c; color: #e6e6e6; border-radius: 0; }
 menu, menu menuitem, menu menuitem * , popover, popover * { background-color: #111111; color: #e6e6e6; border-radius: 0; }
-menu menuitem:hover, menu menuitem:hover * { background-color: #ffffff; color: #000000; }
+menu menuitem:hover, menu menuitem:hover * { background-color: @A@; color: #000000; }
 scale trough { background-color: #303030; min-height: 4px; border: none; border-radius: 0; }
-scale trough highlight { background-color: #ffffff; border: none; border-radius: 0; }
-scale slider { background-color: #ffffff; min-width: 14px; min-height: 14px; border-radius: 0; border: none; margin: -6px; }
+scale trough highlight { background-color: @A@; border: none; border-radius: 0; }
+scale slider { background-color: @A@; min-width: 14px; min-height: 14px; border-radius: 0; border: none; margin: -6px; }
 scale value, scale marks, scale mark label { color: #8c8c8c; }
 switch { background-color: #303030; border: 1px solid #6e6e6e; border-radius: 0; min-width: 52px; min-height: 24px; }
-switch:checked { background-color: #ffffff; border-color: #ffffff; }
+switch:checked { background-color: @A@; border-color: @A@; }
 switch slider { background-color: #8c8c8c; border-radius: 0; border: none; min-width: 24px; min-height: 24px; margin: 0; }
 switch:checked slider { background-color: #000000; }
 radiobutton radio { background-color: #1c1c1c; border: 1px solid #8c8c8c; border-radius: 0; min-width: 16px; min-height: 16px; }
-radiobutton radio:checked { background-color: #ffffff; border-color: #ffffff; }
+radiobutton radio:checked { background-color: @A@; border-color: @A@; }
 scrollbar, scrollbar slider { background-color: #1c1c1c; border-radius: 0; }
 """
+
+
+def css_for(accent=ACCENT_DEFAULT):
+    """The Settings window stylesheet in the chosen accent colour."""
+    accent = norm_accent(accent) or ACCENT_DEFAULT
+    c = accent_palette(accent)
+    ghost = "rgba(%d,%d,%d,0.18)" % tuple(int(accent[i:i + 2], 16) for i in (1, 3, 5))
+    return CSS_TEMPLATE.replace("@A@", c["A"]).replace("@S@", c["S"]).replace("@G@", ghost).encode()
 
 
 def launch_gui(confirm=True):
@@ -758,11 +1499,10 @@ def launch_gui(confirm=True):
     Gdk.set_program_class("i3dots-settings")
 
     provider = Gtk.CssProvider()
-    provider.load_from_data(CSS)
+    settings = load_settings()
+    provider.load_from_data(css_for((settings.get('colors') or {}).get('accent')))
     Gtk.StyleContext.add_provider_for_screen(
         Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-
-    settings = load_settings()
 
     win = Gtk.Window(title="Settings")
     win.set_default_size(780, 600)
@@ -1145,6 +1885,8 @@ def launch_gui(confirm=True):
     op = settings.get("opacity") or {
         "active": round(read_value(PICOM_CONF, "active-opacity", 1.0) * 100),
         "inactive": round(read_value(PICOM_CONF, "inactive-opacity", 0.95) * 100)}
+    if "terminal" not in op:
+        op = dict(op, terminal=round(read_value(GHOSTTY_CONF, "background-opacity", 0.9) * 100))
 
     def pct_scale(value):
         sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 20, 100, 1)
@@ -1158,9 +1900,13 @@ def launch_gui(confirm=True):
     op_inactive = pct_scale(op.get("inactive", OPACITY_DEFAULT["inactive"]))
     ap.pack_start(row("Focused window", op_active), False, False, 0)
     ap.pack_start(row("Unfocused windows", op_inactive), False, False, 0)
+    op_terminal = pct_scale(op.get("terminal", OPACITY_DEFAULT["terminal"]))
+    ap.pack_start(row("Terminal background", op_terminal), False, False, 0)
     ap.pack_start(dim("100% is fully solid; lower is more see-through. Set the unfocused value lower than the "
-                      "focused one to make the window you are using stand out. Needs the compositor (picom) "
-                      "to be running. Video players and fullscreen windows stay solid."), False, False, 0)
+                      "focused one to make the window you are using stand out. The terminal slider only changes the "
+                      "background of Ghostty and kitty (the text stays sharp); it adds to the window values above. "
+                      "Needs the compositor (picom) to be running. Video players and fullscreen windows stay solid."),
+                  False, False, 0)
 
     # gaps section (same tab)
     mp_sep = Gtk.Separator()
@@ -1203,6 +1949,11 @@ def launch_gui(confirm=True):
     bar_pos.append("bottom", "Bottom of the screen")
     bar_pos.set_active_id(bar_saved.get("position", "top") if bar_saved.get("position") in ("top", "bottom") else "top")
     ap.pack_start(row("Bar position", bar_pos), False, False, 0)
+    bar_size = Gtk.ComboBoxText()
+    for key, label in BAR_SIZE_LABELS:
+        bar_size.append(key, label)
+    bar_size.set_active_id(bar_saved.get("size") if bar_saved.get("size") in BAR_SIZES else BAR_DEFAULT["size"])
+    ap.pack_start(row("Bar size", bar_size), False, False, 0)
     bar_all = Gtk.Switch()
     bar_all.set_halign(Gtk.Align.START)
     bar_sel = bar_saved.get("monitors")
@@ -1532,12 +2283,634 @@ def launch_gui(confirm=True):
             GLib.timeout_add_seconds(3, lambda w=w: (w.destroy(), False)[1])
     ident_btn.connect("clicked", identify)
 
+    # ---------------- bluetooth tab
+    import threading
+    bp = page()
+    bt_title = Gtk.Label(label="Bluetooth", xalign=0)
+    bt_title.get_style_context().add_class("title")
+    bp.pack_start(bt_title, False, False, 0)
+    bt_msg = dim("")
+    bt_power_sw = Gtk.Switch()
+    bt_power_sw.set_halign(Gtk.Align.START)
+    bp.pack_start(row("Bluetooth", bt_power_sw), False, False, 0)
+
+    def bt_list(cols):
+        store = Gtk.ListStore(*([str] * len(cols) + [str]))        # last column = MAC address (hidden)
+        view = Gtk.TreeView(model=store)
+        for i, c in enumerate(cols):
+            r_ = Gtk.CellRendererText()
+            r_.set_property("ellipsize", 3 if i == 0 else 0)
+            col_ = Gtk.TreeViewColumn(c, r_, text=i)
+            col_.set_expand(i == 0)
+            if i > 0:
+                col_.set_min_width(170)
+            col_.set_resizable(True)
+            view.append_column(col_)
+        sc_ = Gtk.ScrolledWindow()
+        sc_.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sc_.set_min_content_height(150)
+        sc_.add(view)
+        return store, view, sc_
+
+    my_title = Gtk.Label(label="My devices", xalign=0)
+    my_title.get_style_context().add_class("title")
+    bp.pack_start(my_title, False, False, 0)
+    my_store, my_view, my_scroll = bt_list(["Device", "Status"])
+    bp.pack_start(my_scroll, True, True, 0)
+    my_btns = Gtk.Box(spacing=10)
+    bt_connect = Gtk.Button(label="Connect")
+    bt_disconnect = Gtk.Button(label="Disconnect")
+    bt_forget = Gtk.Button(label="Forget device")
+    bt_refresh = Gtk.Button(label="Refresh")
+    for b_ in (bt_connect, bt_disconnect, bt_forget, bt_refresh):
+        my_btns.pack_start(b_, False, False, 0)
+    bp.pack_start(my_btns, False, False, 0)
+
+    add_title = Gtk.Label(label="Add a device", xalign=0)
+    add_title.get_style_context().add_class("title")
+    bp.pack_start(add_title, False, False, 0)
+    bp.pack_start(dim("Put the device in pairing mode, then press Search. Pick it from the list and press Pair and connect."),
+                  False, False, 0)
+    near_store, near_view, near_scroll = bt_list(["Nearby device", "Address"])
+    bp.pack_start(near_scroll, True, True, 0)
+    add_btns = Gtk.Box(spacing=10)
+    bt_search = Gtk.Button(label="Search for devices")
+    bt_pair_btn = Gtk.Button(label="Pair and connect")
+    bt_manager = Gtk.Button(label="Open full Bluetooth manager")
+    for b_ in (bt_search, bt_pair_btn, bt_manager):
+        add_btns.pack_start(b_, False, False, 0)
+    bp.pack_start(add_btns, False, False, 0)
+    bp.pack_start(bt_msg, False, False, 0)
+    bt_manager.set_sensitive(bool(shutil.which("blueman-manager")))
+    nb.append_page(bp, Gtk.Label(label="Bluetooth"))
+
+    bt_busy = {"n": 0, "power_ui": False}
+    bt_all = (bt_power_sw, bt_connect, bt_disconnect, bt_forget, bt_refresh, bt_search, bt_pair_btn)
+
+    def bt_set_busy(on, text=None):
+        bt_busy["n"] += 1 if on else -1
+        for w in bt_all:
+            w.set_sensitive(bt_busy["n"] <= 0)
+        if text is not None:
+            bt_msg.set_text(text)
+
+    def bt_background(work, done, text):
+        """Run work() off the UI thread, then done(result) on it."""
+        bt_set_busy(True, text)
+
+        def go():
+            try:
+                res = work()
+            except Exception as e:                      # never let a worker thread die silently
+                res = (False, str(e))
+            GLib.idle_add(finish, res)
+
+        def finish(res):
+            bt_set_busy(False)
+            done(res)
+            return False
+        threading.Thread(target=go, daemon=True).start()
+
+    def bt_fill(state, devs):
+        bt_busy["power_ui"] = True
+        bt_power_sw.set_active(bool(state.get("powered")))
+        bt_busy["power_ui"] = False
+        bt_msg.set_text("")
+        my_store.clear()
+        near_store.clear()
+        for d in devs:
+            if d["paired"]:
+                my_store.append([d["name"], "Connected" if d["connected"] else "Not connected", d["mac"]])
+            else:
+                near_store.append([d["name"], d["mac"], d["mac"]])
+        if not state.get("available"):
+            bt_msg.set_text(BT_HINT if not state.get("installed") or not shutil.which("bluetoothctl") else
+                            "No Bluetooth adapter found (or the service is not running: sudo systemctl enable --now bluetooth).")
+        elif not state.get("powered"):
+            bt_msg.set_text("Bluetooth is off. Turn it on with the switch above.")
+
+    def bt_reload(note=None):
+        def work():
+            st = bt_state()
+            return (st, bt_devices() if st.get("available") else [])
+        bt_background(work, lambda res: (bt_fill(*res), bt_msg.set_text(note) if note else None), "Reading Bluetooth devices...")
+
+    def selected(view):
+        model, it = view.get_selection().get_selected()
+        return (model[it][0], model[it][2]) if it else (None, None)
+
+    def on_power(sw, _p):
+        if bt_busy["power_ui"] or bt_busy["n"] > 0:
+            return
+        want = sw.get_active()
+        bt_background(lambda: bt_power(want), lambda res: bt_reload(None if res[0] else "Could not change Bluetooth power: " + res[1].strip()[-120:]),
+                      "Turning Bluetooth %s..." % ("on" if want else "off"))
+    bt_power_sw.connect("notify::active", on_power)
+
+    def do_device(action, verb):
+        name, mac = selected(my_view)
+        if not mac:
+            bt_msg.set_text("Pick a device in My devices first.")
+            return
+        bt_background(lambda: bt_action(action, mac),
+                      lambda res: bt_reload("%s %s." % (name, verb) if res[0] else "Could not %s %s: %s" % (action, name, res[1])),
+                      "%s..." % verb.capitalize())
+    bt_connect.connect("clicked", lambda *_: do_device("connect", "connected"))
+    bt_disconnect.connect("clicked", lambda *_: do_device("disconnect", "disconnected"))
+
+    def forget(*_):
+        name, mac = selected(my_view)
+        if not mac:
+            bt_msg.set_text("Pick a device in My devices first.")
+            return
+        d = Gtk.MessageDialog(transient_for=win, modal=True, message_type=Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.NONE, text="Forget %s?" % name)
+        d.format_secondary_text("It will be unpaired. You can pair it again later.")
+        d.add_button("Cancel", Gtk.ResponseType.NO)
+        d.add_button("Forget", Gtk.ResponseType.YES)
+        ans = d.run()
+        d.destroy()
+        if ans == Gtk.ResponseType.YES:
+            bt_background(lambda: bt_action("remove", mac),
+                          lambda res: bt_reload("Forgot %s." % name if res[0] else "Could not forget %s: %s" % (name, res[1])),
+                          "Removing...")
+    bt_forget.connect("clicked", forget)
+    bt_refresh.connect("clicked", lambda *_: bt_reload())
+
+    def search(*_):
+        def work():
+            if not bt_state().get("powered"):
+                return (False, "Turn Bluetooth on first.")
+            bt_scan(8)
+            return (True, "")
+        bt_background(work, lambda res: bt_reload("Search finished. Pick your device below." if res[0] else res[1]),
+                      "Searching for devices (8 seconds)...")
+    bt_search.connect("clicked", search)
+
+    def pair(*_):
+        name, mac = selected(near_view)
+        if not mac:
+            bt_msg.set_text("Press Search, then pick a device in the nearby list.")
+            return
+        bt_background(lambda: bt_pair(mac),
+                      lambda res: bt_reload("Paired and connected to %s." % name if res[0] else "Could not pair %s: %s" % (name, res[1])),
+                      "Pairing with %s (can take up to 30 seconds)..." % name)
+    bt_pair_btn.connect("clicked", pair)
+
+    def open_manager(*_):
+        exe = shutil.which("blueman-manager")
+        if exe:
+            subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    bt_manager.connect("clicked", open_manager)
+
+    bt_loaded = {"done": False}
+
+    def on_page(_nb, _page, num):
+        if num == nb.page_num(bp) and not bt_loaded["done"]:
+            bt_loaded["done"] = True
+            bt_reload()
+        return False
+    nb.connect("switch-page", on_page)
+
+    # ---------------- wi-fi tab
+    wp = page()
+    wt = Gtk.Label(label="Wi-Fi", xalign=0)
+    wt.get_style_context().add_class("title")
+    wp.pack_start(wt, False, False, 0)
+    wf_power = Gtk.Switch()
+    wf_power.set_halign(Gtk.Align.START)
+    wp.pack_start(row("Wi-Fi", wf_power), False, False, 0)
+    wf_now = dim("")
+    wp.pack_start(wf_now, False, False, 0)
+    wn_title = Gtk.Label(label="Networks", xalign=0)
+    wn_title.get_style_context().add_class("title")
+    wp.pack_start(wn_title, False, False, 0)
+    wf_store, wf_view, wf_scroll = bt_list(["Network", "Signal", "Security", "Status"])
+    wf_view.get_column(1).set_min_width(80)
+    wf_view.get_column(2).set_min_width(110)
+    wf_view.get_column(3).set_min_width(130)
+    wp.pack_start(wf_scroll, True, True, 0)
+    wf_btns = Gtk.Box(spacing=10)
+    wf_connect = Gtk.Button(label="Connect")
+    wf_disconnect = Gtk.Button(label="Disconnect")
+    wf_forget = Gtk.Button(label="Forget network")
+    wf_rescan = Gtk.Button(label="Scan again")
+    for b_ in (wf_connect, wf_disconnect, wf_forget, wf_rescan):
+        wf_btns.pack_start(b_, False, False, 0)
+    wp.pack_start(wf_btns, False, False, 0)
+    wf_btns2 = Gtk.Box(spacing=10)
+    wf_hidden = Gtk.Button(label="Join a hidden network...")
+    wf_editor = Gtk.Button(label="Open full network editor")
+    wf_editor.set_sensitive(bool(shutil.which("nm-connection-editor")))
+    wf_btns2.pack_start(wf_hidden, False, False, 0)
+    wf_btns2.pack_start(wf_editor, False, False, 0)
+    wp.pack_start(wf_btns2, False, False, 0)
+    wf_msg = dim("")
+    wp.pack_start(wf_msg, False, False, 0)
+    nb.append_page(wp, Gtk.Label(label="Wi-Fi"))
+
+    wf_busy = {"n": 0, "ui": False, "iface": "", "nets": {}}
+    wf_all = (wf_power, wf_connect, wf_disconnect, wf_forget, wf_rescan, wf_hidden)
+
+    def wf_background(work, done, text):
+        wf_busy["n"] += 1
+        for w in wf_all:
+            w.set_sensitive(False)
+        wf_msg.set_text(text)
+
+        def go():
+            try:
+                res = work()
+            except Exception as e:
+                res = (False, str(e))
+            GLib.idle_add(finish, res)
+
+        def finish(res):
+            wf_busy["n"] -= 1
+            for w in wf_all:
+                w.set_sensitive(wf_busy["n"] <= 0)
+            done(res)
+            return False
+        threading.Thread(target=go, daemon=True).start()
+
+    def wf_fill(state, nets):
+        wf_busy["ui"] = True
+        wf_power.set_active(bool(state.get("enabled")))
+        wf_busy["ui"] = False
+        wf_busy["iface"] = state.get("iface", "")
+        wf_busy["nets"] = {n["ssid"]: n for n in nets}
+        wf_msg.set_text("")
+        wf_store.clear()
+        cur = ""
+        for n in nets:
+            status = "Connected" if n["active"] else ("Saved" if n["saved"] else "")
+            if n["active"]:
+                cur = n["ssid"]
+            wf_store.append([n["ssid"], "%d%%" % n["signal"], n["security"], status, n["ssid"]])
+        wf_now.set_text(("Connected to %s." % cur) if cur else "Not connected.")
+        if not state.get("installed"):
+            wf_msg.set_text(NM_HINT)
+        elif not state.get("available"):
+            wf_msg.set_text("No Wi-Fi adapter found on this computer.")
+            wf_now.set_text("")
+        elif not state.get("enabled"):
+            wf_msg.set_text("Wi-Fi is off. Turn it on with the switch above.")
+            wf_now.set_text("")
+
+    def wf_reload(note=None, rescan=False):
+        def work():
+            st = nm_state()
+            return (st, nm_networks(rescan) if st.get("available") and st.get("enabled") else [])
+
+        def done(res):
+            wf_fill(*res)
+            if note:
+                wf_msg.set_text(note)
+        wf_background(work, done, "Looking for networks..." if rescan else "Reading Wi-Fi status...")
+
+    def wf_selected():
+        model, it = wf_view.get_selection().get_selected()
+        return model[it][4] if it else None
+
+    def ask_text(title, with_name, ssid=""):
+        """Small dialog for a Wi-Fi name and/or password. Returns (name, password) or None."""
+        d = Gtk.Dialog(title=title, transient_for=win, modal=True)
+        d.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        d.add_button("Connect", Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        box = d.get_content_area()
+        box.set_spacing(10)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(box, "set_margin_" + side)(16)
+        name = Gtk.Entry()
+        name.set_activates_default(True)
+        pw = Gtk.Entry()
+        pw.set_visibility(False)
+        pw.set_activates_default(True)
+        if with_name:
+            name.set_placeholder_text("Network name")
+            box.pack_start(name, False, False, 0)
+        else:
+            box.pack_start(Gtk.Label(label="Password for %s" % ssid, xalign=0), False, False, 0)
+        pw.set_placeholder_text("Password")
+        box.pack_start(pw, False, False, 0)
+        show = Gtk.CheckButton(label="Show password")
+        show.connect("toggled", lambda b: pw.set_visibility(b.get_active()))
+        box.pack_start(show, False, False, 0)
+        d.show_all()
+        ans = d.run()
+        res = (name.get_text().strip(), pw.get_text()) if ans == Gtk.ResponseType.OK else None
+        d.destroy()
+        return res
+
+    def on_wf_power(sw, _p):
+        if wf_busy["ui"] or wf_busy["n"] > 0:
+            return
+        want = sw.get_active()
+        wf_background(lambda: nm_power(want),
+                      lambda res: wf_reload(None if res[0] else "Could not change Wi-Fi power: " + res[1].strip()[-120:]),
+                      "Turning Wi-Fi %s..." % ("on" if want else "off"))
+    wf_power.connect("notify::active", on_wf_power)
+
+    def wf_join(ssid, password=None, hidden=False):
+        n = wf_busy["nets"].get(ssid)
+        saved = bool(n and n["saved"])
+        wf_background(lambda: nm_connect(ssid, password, hidden, saved),
+                      lambda res: wf_reload(("Connected to %s." % ssid) if res[0] else "Could not connect to %s: %s" % (ssid, res[1])),
+                      "Connecting to %s..." % ssid)
+
+    def on_wf_connect(*_):
+        ssid = wf_selected()
+        if not ssid:
+            wf_msg.set_text("Pick a network first.")
+            return
+        n = wf_busy["nets"].get(ssid, {})
+        if n.get("security", "").find("802.1X") >= 0 and not n.get("saved"):
+            wf_msg.set_text("This network uses a username and password login (802.1X). Use the full network editor.")
+            return
+        if n.get("security") == "Open" or n.get("saved"):
+            wf_join(ssid)
+            return
+        got = ask_text("Join %s" % ssid, False, ssid)
+        if got:
+            if not nm_valid_password(got[1]):
+                wf_msg.set_text("The password must be 8 to 63 characters.")
+                return
+            wf_join(ssid, got[1])
+    wf_connect.connect("clicked", on_wf_connect)
+
+    def on_wf_disconnect(*_):
+        iface = wf_busy["iface"]
+        wf_background(lambda: nm_disconnect(iface),
+                      lambda res: wf_reload("Disconnected." if res[0] else "Could not disconnect: " + res[1]),
+                      "Disconnecting...")
+    wf_disconnect.connect("clicked", on_wf_disconnect)
+
+    def on_wf_forget(*_):
+        ssid = wf_selected()
+        n = wf_busy["nets"].get(ssid or "", {})
+        if not ssid:
+            wf_msg.set_text("Pick a network first.")
+            return
+        if not n.get("saved"):
+            wf_msg.set_text("%s is not saved, so there is nothing to forget." % ssid)
+            return
+        d = Gtk.MessageDialog(transient_for=win, modal=True, message_type=Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.NONE, text="Forget %s?" % ssid)
+        d.format_secondary_text("Its saved password is removed. You will need the password to join again.")
+        d.add_button("Cancel", Gtk.ResponseType.NO)
+        d.add_button("Forget", Gtk.ResponseType.YES)
+        ans = d.run()
+        d.destroy()
+        if ans == Gtk.ResponseType.YES:
+            wf_background(lambda: nm_forget(ssid),
+                          lambda res: wf_reload("Forgot %s." % ssid if res[0] else "Could not forget %s: %s" % (ssid, res[1])),
+                          "Removing...")
+    wf_forget.connect("clicked", on_wf_forget)
+    wf_rescan.connect("clicked", lambda *_: wf_reload(rescan=True))
+
+    def on_wf_hidden(*_):
+        got = ask_text("Join a hidden network", True)
+        if not got:
+            return
+        name, pw = got
+        if not nm_valid_ssid(name):
+            wf_msg.set_text("Enter the network name (up to 32 characters).")
+            return
+        if pw and not nm_valid_password(pw):
+            wf_msg.set_text("The password must be 8 to 63 characters.")
+            return
+        wf_join(name, pw or None, hidden=True)
+    wf_hidden.connect("clicked", on_wf_hidden)
+
+    def on_wf_editor(*_):
+        exe = shutil.which("nm-connection-editor")
+        if exe:
+            subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    wf_editor.connect("clicked", on_wf_editor)
+
+    wf_loaded = {"done": False}
+
+    def on_wf_page(_nb, _page, num):
+        if num == nb.page_num(wp) and not wf_loaded["done"]:
+            wf_loaded["done"] = True
+            wf_reload()
+        return False
+    nb.connect("switch-page", on_wf_page)
+
+    # ---------------- themes tab
+    tp = page()
+    tt = Gtk.Label(label="Terminal themes", xalign=0)
+    tt.get_style_context().add_class("title")
+    tp.pack_start(tt, False, False, 0)
+    tp.pack_start(dim("Pick a colour theme for each terminal. The preview shows the background, text and the 16 "
+                      "terminal colours. Press Apply to use it; open terminals reload by themselves."), False, False, 0)
+    theme_pick = {}                                  # kind -> function returning the chosen theme name
+
+    def theme_section(kind, title, themes, current):
+        lbl = Gtk.Label(label=title, xalign=0)
+        lbl.get_style_context().add_class("title")
+        tp.pack_start(lbl, False, False, 0)
+        if not themes:
+            tp.pack_start(dim("No %s themes were found (%s is not installed or has no theme folder)." % (title, title)),
+                          False, False, 0)
+            theme_pick[kind] = lambda: None
+            return
+        store = Gtk.ListStore(str, str)
+        names = sorted(themes, key=lambda n: (n != THEME_DEFAULT.get(kind), theme_label(kind, n).lower()))
+        for n in names:
+            store.append([theme_label(kind, n), n])
+        flt = store.filter_new()
+        query = {"q": ""}
+        flt.set_visible_func(lambda m, it, _d: query["q"] in m[it][0].lower())
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text("Search themes...")
+        view = Gtk.TreeView(model=flt)
+        view.set_headers_visible(False)
+        view.append_column(Gtk.TreeViewColumn("Theme", Gtk.CellRendererText(), text=0))
+        sc_ = Gtk.ScrolledWindow()
+        sc_.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sc_.set_min_content_height(130)
+        sc_.add(view)
+        prev = Gtk.DrawingArea()
+        prev.set_size_request(-1, 92)
+        cur = {"name": current if current in themes else None, "colors": None}
+
+        def show(name):
+            cur["name"] = name
+            cur["colors"] = parse_theme_colors(kind, themes[name])
+            prev.queue_draw()
+
+        def hexrgb(h):
+            return tuple(int(h[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+
+        def draw(_w, cr):
+            c = cur["colors"]
+            if not c:
+                return False
+            w_, h_ = prev.get_allocated_width(), prev.get_allocated_height()
+            cr.set_source_rgb(*hexrgb(c["bg"]))
+            cr.rectangle(0, 0, w_, h_)
+            cr.fill()
+            cr.set_source_rgb(*hexrgb(c["fg"]))
+            cr.select_font_face("monospace")
+            cr.set_font_size(15)
+            cr.move_to(12, 26)
+            cr.show_text("user@host:~$ ls --color  The quick brown fox")
+            for i, col in enumerate(c["palette"]):
+                x = 12 + (i % 8) * 34
+                y = 42 + (i // 8) * 22
+                cr.set_source_rgb(*hexrgb(col))
+                cr.rectangle(x, y, 30, 18)
+                cr.fill()
+            return False
+        prev.connect("draw", draw)
+
+        def on_sel(sel):
+            model, it = sel.get_selected()
+            if it:
+                show(model[it][1])
+        view.get_selection().connect("changed", on_sel)
+
+        def on_search(e):
+            query["q"] = e.get_text().strip().lower()
+            flt.refilter()
+        search.connect("search-changed", on_search)
+        tp.pack_start(search, False, False, 0)
+        tp.pack_start(sc_, True, True, 0)
+        tp.pack_start(prev, False, False, 0)
+        theme_pick[kind] = lambda: cur["name"]
+        if cur["name"]:
+            for i, r_ in enumerate(flt):
+                if r_[1] == cur["name"]:
+                    view.get_selection().select_path(Gtk.TreePath(i))
+                    view.scroll_to_cell(Gtk.TreePath(i), None, True, 0.3, 0)
+                    break
+            show(cur["name"])
+
+    saved_t = settings.get("themes") or {}
+    gh_themes, ki_themes = list_ghostty_themes(), list_kitty_themes()
+    theme_section("ghostty", "Ghostty", gh_themes, saved_t.get("ghostty") or current_theme("ghostty"))
+    theme_section("kitty", "kitty", ki_themes, saved_t.get("kitty") or current_theme("kitty"))
+    nb.insert_page(tp, Gtk.Label(label="Themes"), 3)
+
+    # ---------------- colors tab
+    cp = page()
+    ctitle = Gtk.Label(label="Colors", xalign=0)
+    ctitle.get_style_context().add_class("title")
+    cp.pack_start(ctitle, False, False, 0)
+    cp.pack_start(dim("Pick the accent colour used everywhere: window borders, the bar, menus, notifications, "
+                      "the lock screen and this window. Black and the greys stay as they are. "
+                      "Press Apply to use it (the bar and borders refresh by themselves)."), False, False, 0)
+    acc = {"v": norm_accent((settings.get("colors") or {}).get("accent")) or ACCENT_DEFAULT}
+    sw_css = "".join("button.sw-%s, button.sw-%s:hover { background-color: %s; border: 2px solid #303030; "
+                     "padding: 0; min-height: 44px; }\n" % (k, k, hx) for k, _n, hx in ACCENT_PRESETS)
+    sw_css += "button.sw-on, button.sw-on:hover { border: 3px solid #ffffff; }\n"
+    sw_prov = Gtk.CssProvider()
+    sw_prov.load_from_data(sw_css.encode())
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), sw_prov, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+    pv_prov = Gtk.CssProvider()
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), pv_prov, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+
+    grid = Gtk.Grid(column_spacing=12, row_spacing=12)
+    sw_buttons = {}
+
+    def pick_preset(_b, hx):
+        set_accent(hx)
+
+    for idx, (key, name, hx) in enumerate(ACCENT_PRESETS):
+        cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        b = Gtk.Button()
+        b.set_size_request(120, 44)
+        b.get_style_context().add_class("sw-" + key)
+        b.set_tooltip_text("%s  %s" % (name, hx))
+        b.connect("clicked", pick_preset, hx)
+        sw_buttons[key] = (b, hx)
+        cell.pack_start(b, False, False, 0)
+        cap = Gtk.Label(label=name, xalign=0.5)
+        cap.get_style_context().add_class("dim")
+        cell.pack_start(cap, False, False, 0)
+        grid.attach(cell, idx % 3, idx // 3, 1, 1)
+    cp.pack_start(grid, False, False, 0)
+
+    custom_entry = Gtk.Entry(max_length=7, width_chars=9)
+    custom_entry.set_placeholder_text("#00e5ff")
+    cp.pack_start(row("Custom colour (hex)", custom_entry, width=230), False, False, 0)
+    custom_msg = dim("")
+    cp.pack_start(custom_msg, False, False, 0)
+
+    pvt = Gtk.Label(label="Preview", xalign=0)
+    pvt.get_style_context().add_class("dim")
+    cp.pack_start(pvt, False, False, 0)
+    pv_bar = Gtk.Box(spacing=4)
+    pv_bar.get_style_context().add_class("pv-bar")
+    for txt, cls in (("I", "pv-chip"), ("II", "pv-dim"), ("III", "pv-dim")):
+        lb = Gtk.Label(label=txt)
+        lb.get_style_context().add_class(cls)
+        pv_bar.pack_start(lb, False, False, 0)
+    for txt, cls in (("12:30", "pv-acc"), ("awake", "pv-acc")):
+        lb = Gtk.Label(label=txt)
+        lb.get_style_context().add_class(cls)
+        pv_bar.pack_end(lb, False, False, 8)
+    cp.pack_start(pv_bar, False, False, 0)
+    pv_win = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    pv_win.get_style_context().add_class("pv-win")
+    lb = Gtk.Label(label="A focused window has this border", xalign=0)
+    lb.get_style_context().add_class("pv-text")
+    pv_win.pack_start(lb, False, False, 0)
+    sel = Gtk.Label(label=" Selected menu item ", xalign=0)
+    sel.get_style_context().add_class("pv-sel")
+    pv_win.pack_start(sel, False, False, 0)
+    cp.pack_start(pv_win, False, False, 0)
+
+    def paint_preview(hx):
+        pv_prov.load_from_data((
+            ".pv-bar { background-color: #000000; border-bottom: 1px solid #303030; padding: 6px 4px; }\n"
+            ".pv-chip { background-color: %(hx)s; color: #000000; padding: 3px 12px; }\n"
+            ".pv-dim { color: #6e6e6e; padding: 3px 12px; }\n"
+            ".pv-acc { color: %(hx)s; }\n"
+            ".pv-win { background-color: #000000; border: 3px solid %(hx)s; padding: 14px; }\n"
+            ".pv-text { color: #e6e6e6; }\n"
+            ".pv-sel { background-color: %(hx)s; color: #000000; padding: 3px 8px; }\n" % {"hx": hx}).encode())
+
+    def set_accent(hx, from_entry=False):
+        hx = norm_accent(hx)
+        if not hx:
+            return
+        acc["v"] = hx
+        for _k, (btn, bhx) in sw_buttons.items():
+            ctx = btn.get_style_context()
+            (ctx.add_class if bhx == hx else ctx.remove_class)("sw-on")
+        if not from_entry:
+            custom_entry.handler_block_by_func(on_custom)
+            custom_entry.set_text(hx)
+            custom_entry.handler_unblock_by_func(on_custom)
+            custom_msg.set_text("")
+        paint_preview(hx)
+
+    def on_custom(e):
+        txt = e.get_text()
+        hx = norm_accent(txt)
+        if not hx:
+            custom_msg.set_text("Type a colour like #00e5ff." if txt.strip() else "")
+        elif brightness(hx) < ACCENT_MIN_BRIGHT:
+            custom_msg.set_text("That colour is too dark to read on black - pick a brighter one.")
+        else:
+            custom_msg.set_text("")
+            set_accent(hx, from_entry=True)
+    custom_entry.connect("changed", on_custom)
+    set_accent(acc["v"])
+    nb.insert_page(cp, Gtk.Label(label="Colors"), 3)
+
     # ---------------- buttons
     bar = Gtk.Box(spacing=10)
     for side in ("top", "bottom", "start", "end"):
         getattr(bar, "set_margin_" + side)(14)
     status = Gtk.Label(label="", xalign=0)
     status.get_style_context().add_class("status")
+    status.set_ellipsize(3)                 # a long error message must not stretch the window
+    status.set_max_width_chars(70)
+    status.connect("notify::label", lambda lb, _p: lb.set_tooltip_text(lb.get_text() or None))
     bar.pack_start(status, True, True, 0)
     close = Gtk.Button(label="Close")
     close.connect("clicked", lambda *_: win.destroy())
@@ -1588,27 +2961,47 @@ def launch_gui(confirm=True):
             status.set_text("Error: %s" % e)
 
     def apply_everything():
+        errs = []
+
+        def safe(what, fn, *args, **kw):
+            """One failing part (say, a read-only file) must not stop the rest or lose the saved settings."""
+            try:
+                return fn(*args, **kw)
+            except Exception as e:  # noqa: BLE001
+                errs.append("%s: %s" % (what, e))
+                return None
+
         store_device()
         if cur_combo.get_active_id():
             settings["cursor"] = {"theme": cur_combo.get_active_id(), "size": int(cur_size.get_active_id())}
-            apply_cursor(settings)
-        settings["opacity"] = {"active": int(op_active.get_value()), "inactive": int(op_inactive.get_value())}
-        apply_opacity(settings, restart=True)
+            safe("cursor", apply_cursor, settings)
+        settings["opacity"] = {"active": int(op_active.get_value()), "inactive": int(op_inactive.get_value()),
+                               "terminal": int(op_terminal.get_value())}
+        safe("opacity", apply_opacity, settings, restart=True)
+        picked = {k: f() for k, f in theme_pick.items() if f()}
+        if picked:
+            settings["themes"] = picked
+            safe("themes", apply_themes, settings)
+        settings["colors"] = {"accent": acc["v"]}
+        safe("colors", apply_colors, settings)
+        provider.load_from_data(css_for(acc["v"]))
         settings["gaps"] = {"inner": int(gap_inner.get_value()), "outer": int(gap_outer.get_value()),
                             "smart": gap_smart.get_active()}
-        apply_gaps(settings, reload=True)
+        safe("gaps", apply_gaps, settings, reload=True)
         settings["apps"] = dict(app_new)
-        apply_apps(settings)
-        kb_commit()
+        safe("apps", apply_apps, settings)
+        safe("keybindings", kb_commit)
         chosen = [n for n, cb in bar_checks.items() if cb.get_active()]
         if bar_all.get_active() or not chosen:
             chosen = None
             if not bar_all.get_active():
                 bar_all.set_active(True)      # nothing ticked = show everywhere, never a bar-less desktop
         old_bar = settings.get("bar") or {}
-        settings["bar"] = {"position": bar_pos.get_active_id() or "top", "monitors": chosen}
-        if settings["bar"] != {"position": old_bar.get("position", "top"), "monitors": old_bar.get("monitors")}:
-            apply_bar(settings)       # only restart the bar when its settings actually changed
+        settings["bar"] = {"position": bar_pos.get_active_id() or "top", "monitors": chosen,
+                           "size": bar_size.get_active_id() or BAR_DEFAULT["size"]}
+        if settings["bar"] != {"position": old_bar.get("position", "top"), "monitors": old_bar.get("monitors"),
+                               "size": old_bar.get("size") if old_bar.get("size") in BAR_SIZES else BAR_DEFAULT["size"]}:
+            safe("bar", apply_bar, settings)       # only restart the bar when its settings actually changed
         before = snapshot_monitors()
         new_mon = collect_monitors() if widgets else {}
         settings["monitors"] = new_mon or settings.get("monitors", {})
@@ -1638,7 +3031,10 @@ def launch_gui(confirm=True):
                 save_settings(settings)
                 return
             save_settings(settings)
-            status.set_text("Saved to %s" % SETTINGS_FILE.replace(os.path.expanduser("~"), "~"))
+            if errs:
+                status.set_text("Saved, but some parts failed - " + "; ".join(errs)[:220])
+            else:
+                status.set_text("Saved to %s" % SETTINGS_FILE.replace(os.path.expanduser("~"), "~"))
         except Exception as e:  # noqa: BLE001 - show any failure to the user
             status.set_text("Error: %s" % e)
 

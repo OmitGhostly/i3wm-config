@@ -1,4 +1,4 @@
-/* Monochrome palette - black / white / greys. Edit here to recolor every rofi menu. */
+/* Palette: black / greys + one accent colour. Written by the Settings window (Colors tab); safe to hand-edit. */
 * {
 active-background: #1c1c1c;
 active-foreground: #ffffff;

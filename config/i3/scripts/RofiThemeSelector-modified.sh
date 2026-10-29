@@ -7,6 +7,9 @@
 # ==================================================
 # A modified version of Rofi-Theme-Selector, concentrating only on ~/.local and also, applying only 10 @themes in ${XDG_CONFIG_HOME:-$HOME/.config}/i3/rofi/config.rasi
 # as opposed to continous adding of //@theme
+# only one copy of this picker at a time (two would edit the same config file at once)
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/i3dots-$(id -u)-$(basename "$0").lock"
+flock -n 9 || exit 0
 
 # This code is released in public domain by Dave Davenport <qball@gmpclient.org>
 
