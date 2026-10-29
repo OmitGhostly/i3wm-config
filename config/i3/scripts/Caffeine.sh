@@ -25,6 +25,10 @@ case "$1" in
           else on; notify-send -u low "Stay awake" "on - the screen will not sleep or lock" 2>/dev/null; fi ;;
   on)  on ;;
   off) off ;;
-  status) if is_on; then echo "%{T2}%{F#$ACCENT}󰅶%{F-}%{T-}%{F#$ACCENT} awake%{F-}"; else echo "%{T2}%{F#6e6e6e}󰛊%{F-}%{T-}"; fi ;;
+  status)
+    # in the "blocks" bar style the block sets the colours; the classic flat bar colours the mug itself
+    if [ "${BAR_STYLE:-}" = blocks ]; then
+      if is_on; then echo "%{T2}󰅶%{T-} awake"; else echo "%{T2}󰛊%{T-}"; fi
+    elif is_on; then echo "%{T2}%{F#$ACCENT}󰅶%{F-}%{T-}%{F#$ACCENT} awake%{F-}"; else echo "%{T2}%{F#6e6e6e}󰛊%{F-}%{T-}"; fi ;;
   *) echo "usage: $0 toggle|on|off|status" >&2; exit 1 ;;
 esac

@@ -7,6 +7,7 @@ Bluetooth and Wi-Fi.
   SettingsGUI.py --bar-env  print the saved bar position/monitors as shell variables (used by polybar/launch.sh)
   SettingsGUI.py --apply    apply the saved settings (run at every i3 start, no GTK needed)
   SettingsGUI.py --dry-run  with --apply: print the commands instead of running them
+  SettingsGUI.py --tab NAME open on a tab: mouse displays appearance colors themes keybindings sound bluetooth wifi
 
 Changes are saved to ~/.config/i3/settings.json and applied immediately.
 No root needed.  Requires: python3, python3-gobject (GTK 3), xinput, xrandr (pactl / bluetoothctl / nmcli for those tabs).
@@ -141,6 +142,13 @@ def sanitize_settings(data):
             out["position"] = c["position"]
         if c.get("size") in BAR_SIZES:
             out["size"] = c["size"]
+        if c.get("style") in dict(BAR_STYLES):
+            out["style"] = c["style"]
+        if c.get("divider") in dict(BAR_DIVIDERS):
+            out["divider"] = c["divider"]
+        for k in ("title", "media"):
+            if isinstance(c.get(k), bool):
+                out[k] = c[k]
         mons = c.get("monitors")
         if isinstance(mons, list) and mons and all(isinstance(n, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,32}", n) for n in mons):
             out["monitors"] = mons
@@ -865,7 +873,31 @@ color15: %(A)s;
 """ % c
 
 
+BAR_SEGMENTS = 13            # modules in the "blocks" bar style (polybar/blocks.ini)
+
+
+def bar_segments(accent):
+    """Block colours for the "blocks" bar style: dark on the left, the accent colour on the right, each with a
+    readable text colour (black on light blocks, white on dark ones)."""
+    out = []
+    for i in range(BAR_SEGMENTS):
+        bg = shade(accent, 0.18 + 0.82 * i / (BAR_SEGMENTS - 1))
+        out.append((bg, readable_on(bg)))
+    return out
+
+
+def readable_on(bg):
+    """Black or white text, whichever contrasts more with the background (WCAG contrast ratio)."""
+    def lin(v):
+        v /= 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (int(bg[i:i + 2], 16) for i in (1, 3, 5))
+    lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    return "#000000" if (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05) else "#f2f2f2"
+
+
 def _polybar_colors(c):
+    segs = "".join("seg%d = %s\nsegfg%d = %s\n" % (i, bg, i, fg) for i, (bg, fg) in enumerate(bar_segments(c["A"]), 1))
     return """; Palette: black / greys + one accent colour. Written by the Settings window (Colors tab); safe to hand-edit.
 [colors]
 background = #f2000000
@@ -876,7 +908,8 @@ secondary = %(S)s
 alert = %(A)s
 disabled = #6e6e6e
 line = #303030
-""" % c
+; "blocks" bar style: one colour per block, dark -> accent, and the text colour on it
+""" % c + segs
 
 
 def _dunst_colors(c):
@@ -1017,7 +1050,11 @@ def apply_tiling(settings):
 
 
 # ------------------------------------------------------------------ top bar (polybar)
-BAR_DEFAULT = {"position": "top", "monitors": None, "size": "large"}   # monitors None = every monitor
+BAR_DEFAULT = {"position": "top", "monitors": None, "size": "large", "style": "blocks", "divider": "rounded",
+               "title": False, "media": False}
+# monitors None = every monitor
+BAR_STYLES = [("blocks", "Blocks - every item highlighted, dark to bright"), ("flat", "Flat - plain text (the classic look)")]
+BAR_DIVIDERS = [("rounded", "Rounded"), ("arrows", "Arrows"), ("slanted", "Slanted"), ("square", "Square")]
 # name -> (bar height px, font size pt). Font sizes are chosen so the text is a whole number of pixels
 # tall at 96 dpi (10.5pt = 14px, 13.5pt = 18px, 16.5pt = 22px): whole-pixel text is the sharpest.
 BAR_SIZES = {"normal": (30, "10.5"), "large": (38, "13.5"), "xlarge": (44, "16.5")}
@@ -1030,8 +1067,12 @@ def bar_env(settings):
     mons = bar.get("monitors")
     size = bar.get("size") if bar.get("size") in BAR_SIZES else BAR_DEFAULT["size"]
     height, font = BAR_SIZES[size]
+    style = bar.get("style") if bar.get("style") in dict(BAR_STYLES) else BAR_DEFAULT["style"]
+    divider = bar.get("divider") if bar.get("divider") in dict(BAR_DIVIDERS) else BAR_DEFAULT["divider"]
     lines = ["BAR_BOTTOM=%s" % ("true" if bar.get("position") == "bottom" else "false"),
-             "BAR_HEIGHT=%d" % height, "BAR_FONT=%s" % font,
+             "BAR_HEIGHT=%d" % height, "BAR_FONT=%s" % font, "BAR_STYLE=%s" % style, "BAR_DIVIDER=%s" % divider,
+             "BAR_SHOW_TITLE=%s" % ("true" if bar.get("title") is True else "false"),
+             "BAR_SHOW_MEDIA=%s" % ("true" if bar.get("media") is True else "false"),
              "BAR_MONITORS=%s" % shlex.quote(" ".join(mons) if mons else "")]
     return "\n".join(lines)
 
@@ -1671,6 +1712,31 @@ def apply_all(settings):
         print("i3 settings: apply_keybinds failed: %s" % e, file=sys.stderr)
 
 
+# ------------------------------------------------------------------ one settings window at a time
+TAB_NAMES = ("mouse", "displays", "appearance", "colors", "themes", "keybindings", "sound", "bluetooth", "wifi")
+GUI_SOCKET = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "i3dots-settings-%d.sock" % os.getuid())
+
+
+def hand_over(tab=None):
+    """If a settings window is already open, ask it to come to the front (and show `tab`). True if it answered."""
+    import socket
+    try:
+        if os.stat(GUI_SOCKET).st_uid != os.getuid():
+            return False                                # not ours: never talk to someone else's socket
+    except OSError:
+        return False
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(2)
+    try:
+        s.connect(GUI_SOCKET)
+        s.sendall(("show %s\n" % (tab if tab in TAB_NAMES else "")).encode())
+        return s.recv(16).startswith(b"ok")
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 # ------------------------------------------------------------------ GUI
 CSS_TEMPLATE = """
 * { font-family: "FantasqueSansM Nerd Font Mono", "Fantasque Sans Mono", monospace; font-size: 11pt;
@@ -1730,7 +1796,7 @@ def css_for(accent=ACCENT_DEFAULT):
     return CSS_TEMPLATE.replace("@A@", c["A"]).replace("@S@", c["S"]).replace("@G@", ghost).encode()
 
 
-def launch_gui(confirm=True):
+def launch_gui(confirm=True, tab=None):
     import gi
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
@@ -1746,10 +1812,15 @@ def launch_gui(confirm=True):
         Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     win = Gtk.Window(title="Settings")
-    # fit the screen: on a small or scaled screen (e.g. a 1440x900 laptop) the buttons must stay visible
+    # fit the screen the pointer is on: on a small or scaled screen (e.g. a 1440x900 laptop) the buttons must
+    # stay visible
     try:
         disp = Gdk.Display.get_default()
-        mon_ = disp.get_primary_monitor() or disp.get_monitor(0)
+        try:
+            _scr, px_, py_ = disp.get_default_seat().get_pointer().get_position()
+            mon_ = disp.get_monitor_at_point(px_, py_)
+        except Exception:  # noqa: BLE001
+            mon_ = disp.get_primary_monitor() or disp.get_monitor(0)
         wa = mon_.get_workarea()
         win.set_default_size(min(1080, wa.width - 40), min(940, wa.height - 60))
     except Exception:  # noqa: BLE001
@@ -1775,6 +1846,35 @@ def launch_gui(confirm=True):
         sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         sw.add(box)
         return sw
+
+    def guard_scroll(widget):
+        """The mouse wheel scrolls the page; it never changes a dropdown, and only changes a slider or number box
+        that you clicked into first (GTK would otherwise change whatever the pointer passes over while scrolling)."""
+        def on_scroll(w, ev):
+            if isinstance(w, (Gtk.Scale, Gtk.SpinButton)) and w.has_focus():
+                return False
+            sw = w.get_ancestor(Gtk.ScrolledWindow)
+            if sw is not None:
+                adj = sw.get_vadjustment()
+                ok, _dx, dy = ev.get_scroll_deltas()
+                if not ok:
+                    dy = {Gdk.ScrollDirection.UP: -1, Gdk.ScrollDirection.DOWN: 1}.get(ev.direction, 0)
+                top = adj.get_upper() - adj.get_page_size()
+                adj.set_value(max(adj.get_lower(), min(top, adj.get_value() + dy * 60)))
+            return True
+        if getattr(widget, "_scroll_guarded", False):
+            return widget
+        widget._scroll_guarded = True
+        widget.add_events(Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+        widget.connect("scroll-event", on_scroll)
+        return widget
+
+    def guard_all(w):
+        if isinstance(w, (Gtk.ComboBox, Gtk.Scale, Gtk.SpinButton)):
+            guard_scroll(w)
+        if isinstance(w, Gtk.Container):
+            for child in w.get_children():
+                guard_all(child)
 
     def dim(text):
         lb = Gtk.Label(label=text, xalign=0)
@@ -2225,6 +2325,32 @@ def launch_gui(confirm=True):
         bar_size.append(key, label)
     bar_size.set_active_id(bar_saved.get("size") if bar_saved.get("size") in BAR_SIZES else BAR_DEFAULT["size"])
     ap.pack_start(row("Bar size", bar_size), False, False, 0)
+    bar_style = Gtk.ComboBoxText()
+    for key, label in BAR_STYLES:
+        bar_style.append(key, label)
+    bar_style.set_active_id(bar_saved.get("style") if bar_saved.get("style") in dict(BAR_STYLES) else BAR_DEFAULT["style"])
+    ap.pack_start(row("Bar style", bar_style), False, False, 0)
+    bar_div = Gtk.ComboBoxText()
+    for key, label in BAR_DIVIDERS:
+        bar_div.append(key, label)
+    bar_div.set_active_id(bar_saved.get("divider") if bar_saved.get("divider") in dict(BAR_DIVIDERS) else BAR_DEFAULT["divider"])
+    bar_div_row = row("Block shape", bar_div)
+    ap.pack_start(bar_div_row, False, False, 0)
+    bar_title = Gtk.Switch()
+    bar_title.set_halign(Gtk.Align.START)
+    bar_title.set_active(bar_saved.get("title") is True)
+    ap.pack_start(row("Show the window title", bar_title), False, False, 0)
+    bar_media = Gtk.Switch()
+    bar_media.set_halign(Gtk.Align.START)
+    bar_media.set_active(bar_saved.get("media") is True)
+    ap.pack_start(row("Show what is playing", bar_media), False, False, 0)
+    bar_style.connect("changed", lambda *_: bar_div_row.set_sensitive(bar_style.get_active_id() == "blocks"))
+    bar_div_row.set_sensitive(bar_style.get_active_id() == "blocks")
+    ap.pack_start(dim("Blocks: every item on the right of the bar (Wi-Fi, Bluetooth, volume, brightness, stay-awake, night "
+                      "light, battery, CPU, RAM, GPU, clock, power) sits in its own highlighted block, shading from dark to "
+                      "your accent colour (Colors tab). The shape sets how the ends of each block look. The window title "
+                      "and the song or video that is playing are hidden unless you switch them on above."),
+                  False, False, 0)
     bar_all = Gtk.Switch()
     bar_all.set_halign(Gtk.Align.START)
     bar_sel = bar_saved.get("monitors")
@@ -2567,6 +2693,7 @@ def launch_gui(confirm=True):
         sc.set_value_pos(Gtk.PositionType.RIGHT)
         sc.add_mark(100, Gtk.PositionType.BOTTOM, "100%")
         sc.connect("format-value", lambda _s, v: "%d%%" % v)
+        guard_scroll(sc)
         mute = Gtk.Switch()
         mute.set_valign(Gtk.Align.CENTER)
         box = Gtk.Box(spacing=12)
@@ -3540,9 +3667,15 @@ def launch_gui(confirm=True):
                 bar_all.set_active(True)      # nothing ticked = show everywhere, never a bar-less desktop
         old_bar = settings.get("bar") or {}
         settings["bar"] = {"position": bar_pos.get_active_id() or "top", "monitors": chosen,
-                           "size": bar_size.get_active_id() or BAR_DEFAULT["size"]}
+                           "size": bar_size.get_active_id() or BAR_DEFAULT["size"],
+                           "style": bar_style.get_active_id() or BAR_DEFAULT["style"],
+                           "divider": bar_div.get_active_id() or BAR_DEFAULT["divider"],
+                           "title": bar_title.get_active(), "media": bar_media.get_active()}
         if settings["bar"] != {"position": old_bar.get("position", "top"), "monitors": old_bar.get("monitors"),
-                               "size": old_bar.get("size") if old_bar.get("size") in BAR_SIZES else BAR_DEFAULT["size"]}:
+                               "size": old_bar.get("size") if old_bar.get("size") in BAR_SIZES else BAR_DEFAULT["size"],
+                               "style": old_bar.get("style", BAR_DEFAULT["style"]),
+                               "divider": old_bar.get("divider", BAR_DEFAULT["divider"]),
+                               "title": old_bar.get("title") is True, "media": old_bar.get("media") is True}:
             safe("bar", apply_bar, settings)       # only restart the bar when its settings actually changed
         before = snapshot_monitors()
         new_mon = collect_monitors() if widgets else {}
@@ -3586,7 +3719,65 @@ def launch_gui(confirm=True):
             status.set_text("Error: %s" % e)
 
     apply_btn.connect("clicked", on_apply)
+    guard_all(nb)
+
+    def show_tab(name):
+        for i in range(nb.get_n_pages()):
+            lb = nb.get_tab_label(nb.get_nth_page(i))
+            if lb is not None and lb.get_text().lower().replace("-", "") == name:
+                nb.set_current_page(i)
+                return
+
+    # one window at a time: a second SUPER+ALT+M (or a click on the bar) brings this one to the front instead
+    import socket
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    for _attempt in range(2):
+        try:
+            server.bind(GUI_SOCKET)
+            break
+        except OSError:
+            if hand_over(tab):
+                sys.exit(0)                             # another window answered: it shows itself
+            try:
+                os.unlink(GUI_SOCKET)                   # left over from a window that crashed
+            except OSError:
+                pass
+    else:
+        server = None
+    if server is not None:
+        server.listen(4)
+        try:
+            my_inode = os.stat(GUI_SOCKET).st_ino           # to remove only our own socket file when closing
+        except OSError:
+            my_inode = None
+
+        def on_client(_src, _cond):
+            try:
+                conn, _addr = server.accept()
+                conn.settimeout(1)
+                msg = conn.recv(64).decode("utf-8", "replace").split()
+                conn.sendall(b"ok\n")
+                conn.close()
+            except OSError:
+                return True
+            if msg[:1] == ["show"]:
+                if len(msg) > 1 and msg[1] in TAB_NAMES:
+                    show_tab(msg[1])
+                win.present()
+                run(["i3-msg", '[instance="^i3dots-settings$"] focus'])
+            return True
+        GLib.io_add_watch(server.fileno(), GLib.IO_IN, on_client)
+
+        def cleanup(*_):
+            try:
+                if my_inode is not None and os.stat(GUI_SOCKET).st_ino == my_inode:
+                    os.unlink(GUI_SOCKET)
+            except OSError:
+                pass
+        win.connect("destroy", cleanup)
     win.show_all()
+    if tab in TAB_NAMES:
+        show_tab(tab)
     if outputs:
         place_all()
     Gtk.main()
@@ -3604,8 +3795,14 @@ def main(argv):
     if "--help" in argv or "-h" in argv:
         print(__doc__)
         return 0
+    tab = None
+    if "--tab" in argv and argv.index("--tab") + 1 < len(argv):
+        tab = argv[argv.index("--tab") + 1].lower().replace("-", "")
+        tab = tab if tab in TAB_NAMES else None
+    if not DRY and hand_over(tab):
+        return 0                                        # the open settings window came to the front
     try:
-        launch_gui(confirm="--no-confirm" not in argv)
+        launch_gui(confirm="--no-confirm" not in argv, tab=tab)
     except ImportError:
         # `python3` may be a pyenv/conda/venv one without GTK: retry with the system Python that has it
         if not os.environ.get("I3DOTS_REEXEC"):
