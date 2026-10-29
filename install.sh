@@ -144,13 +144,13 @@ packages_for() {
                   xprop|/usr/bin/xprop xdpyinfo|/usr/bin/xdpyinfo setxkbmap|/usr/bin/setxkbmap xinput|/usr/bin/xinput
                   network-manager-applet thunar polkit-gnome libnotify|/usr/bin/notify-send
                   libqalculate|/usr/bin/qalc google-noto-color-emoji-fonts|google-noto-emoji-color-fonts
-                  swappy python3-gobject gtk3 glx-utils|/usr/bin/glxinfo $common" ;;
+                  swappy python3-gobject gtk3 glx-utils|/usr/bin/glxinfo pulseaudio-utils|/usr/bin/pactl sound-theme-freedesktop $common" ;;
     arch)   echo "i3-wm xorg-server xorg-xset xorg-xrdb xorg-xsetroot adwaita-icon-theme xorg-xrandr xorg-xprop xorg-xdpyinfo xorg-setxkbmap xorg-xinput
                   network-manager-applet thunar polkit-gnome libnotify libqalculate swappy bluez-utils
-                  noto-fonts-emoji python-gobject gtk3 mesa-utils $common" ;;
+                  noto-fonts-emoji python-gobject gtk3 mesa-utils libpulse sound-theme-freedesktop $common" ;;
     debian) echo "i3 xserver-xorg x11-xserver-utils x11-utils x11-xkb-utils xinput network-manager-gnome thunar
                   policykit-1-gnome|polkit-gnome|lxpolkit libnotify-bin qalc|libqalculate-utils
-                  fonts-noto-color-emoji python3-gi gir1.2-gtk-3.0 mesa-utils $common" ;;
+                  fonts-noto-color-emoji python3-gi gir1.2-gtk-3.0 mesa-utils pulseaudio-utils sound-theme-freedesktop $common" ;;
   esac
 }
 
@@ -249,7 +249,7 @@ install_packages() {
     warn "Unsupported distro (automated: Fedora, Arch and Debian/Ubuntu families)."
     warn "Install yourself:  i3 (>=4.22) xorg polybar picom dunst rofi kitty feh maim xdotool xclip xss-lock i3lock"
     warn "  imagemagick brightnessctl pamixer playerctl pavucontrol nm-applet redshift clipmenu|copyq numlockx xinput"
-    warn "  xrandr xprop xdpyinfo setxkbmap libnotify mpv qalc jq curl arandr thunar polkit-gnome lxappearance fastfetch bluez blueman"
+    warn "  xrandr xprop xdpyinfo setxkbmap libnotify mpv qalc jq curl arandr thunar polkit-gnome lxappearance fastfetch bluez blueman pactl"
     warn "then re-run with --no-packages"
     return 0
   fi
@@ -417,7 +417,7 @@ cat <<MSG
 
 Done.  $how
   - SUPER+H shows every keybind.  SUPER+W picks a wallpaper.
-  - SUPER+ALT+M opens Settings (mouse, displays, appearance, accent colour, terminal themes, keybindings, Bluetooth, Wi-Fi).
+  - SUPER+ALT+M opens Settings (mouse, displays, appearance, accent colour, terminal themes, keybindings, sound, Bluetooth, Wi-Fi).
   - Terminal: Ghostty (kitty if Ghostty could not be installed). Change it in ~/.config/i3/defaults.conf
   - Your old desktop is untouched - pick it again at the login screen any time.
   - Undo the dotfiles:  ./install.sh --restore

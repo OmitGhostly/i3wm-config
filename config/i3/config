@@ -15,6 +15,7 @@ floating_modifier $mod
 focus_follows_mouse yes
 default_orientation horizontal
 workspace_layout default
+# new windows never open as tabs; with spiral tiling on (AutoTiling.py) they split the focused window like Hyprland
 
 # ---- look: monochrome (starterpack-style gaps/borders, black & white) -----------
 default_border pixel 3
@@ -101,7 +102,7 @@ bindsym $mod+Shift+Return exec --no-startup-id $scripts/Dropterminal.sh
 ## display layout tool (arandr)
 bindsym $mod+$alt+d exec --no-startup-id arandr
 
-## settings window (mouse, displays, appearance, colors, themes, keybinds, Bluetooth, Wi-Fi)
+## settings window (mouse, displays, appearance, colors, themes, keybinds, sound, Bluetooth, Wi-Fi)
 bindsym $mod+$alt+m exec --no-startup-id $scripts/SettingsGUI.py
 
 # ---- wallpaper / look toggles -------------------------------------------------
@@ -185,6 +186,8 @@ bindsym $mod+$alt+3 layout tabbed
 bindsym $mod+g layout toggle tabbed split
 ## toggle split direction
 bindsym $mod+Shift+i layout toggle split
+## toggle spiral tiling like Hyprland (on) / classic side by side (off)
+bindsym $mod+$alt+t exec --no-startup-id $scripts/AutoTiling.py --toggle
 ## focus parent container (group)
 bindsym $mod+Ctrl+h focus parent
 ## focus child container
@@ -390,7 +393,7 @@ for_window [class="(?i)^(pavucontrol|org.pulseaudio.pavucontrol|com.saivert.pwvu
 for_window [class="(?i)^nm-connection-editor$"] floating enable, move position center
 for_window [class="(?i)^nm-applet$" title="^Wi-Fi Network Authentication Required$"] floating enable, move position center
 for_window [class="(?i)^(nwg-look|nwg-displays|arandr|blueman-manager)$"] floating enable, move position center
-for_window [instance="^i3dots-settings$" window_type="normal"] floating enable, resize set 860 900, move position center
+for_window [instance="^i3dots-settings$" window_type="normal"] floating enable, move position center
 for_window [class="(?i)^(nvidia-settings|org.kde.kwalletmanager|bitwarden|com.github.wwmm.easyeffects|io.github.amit9838.mousam|nz.co.mega.megasync|wihotspot|wihotspot-gui|ferdium)$"] floating enable, move position center
 for_window [class="(?i)^(whatsapp-for-linux|zapzap|com.rtosta.zapzap)$"] move position center
 for_window [title="^(KooL Quick Cheat Sheet|Keybindings|ROG Control)$"] floating enable, move position center
@@ -419,6 +422,9 @@ exec --no-startup-id rm -f ~/.cache/i3/gamemode
 exec --no-startup-id ~/.config/i3/scripts/first-run.sh
 # re-launched on every reload so the bar picks up new colors / monitors
 exec_always --no-startup-id ~/.config/polybar/launch.sh
+# Hyprland-style spiral tiling (new windows split the focused one along its longer side). Only one copy runs;
+# it follows i3 through restarts. Mode: SUPER+ALT+T or Settings > Appearance > Window tiling.
+exec_always --no-startup-id ~/.config/i3/scripts/AutoTiling.py
 
 # ---- used by the settings window while it records a new key (leaves with XF86Launch9) ----
 mode "keycapture" {

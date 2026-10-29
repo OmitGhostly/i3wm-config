@@ -15,6 +15,15 @@ directSoundDir="${XDG_CONFIG_HOME:-$HOME/.config}/i3/sounds"
 # Mute individual sounds here.
 muteScreenshots=false
 muteVolume=false
+# switches from the Settings window (Sound tab); only plain true/false values are taken from the file
+if [[ -r "${XDG_CONFIG_HOME:-$HOME/.config}/i3/sounds.conf" ]]; then
+    while IFS='=' read -r key value; do
+        case "$key=$value" in
+            muteVolume=true|muteVolume=false) muteVolume="$value" ;;
+            muteScreenshots=true|muteScreenshots=false) muteScreenshots="$value" ;;
+        esac
+    done < "${XDG_CONFIG_HOME:-$HOME/.config}/i3/sounds.conf"
+fi
 
 # Exit if the system sounds are muted.
 if [[ "$mute" = true ]]; then

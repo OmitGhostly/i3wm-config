@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """i3wm-dots settings window: mouse and cursor, displays (resolution, refresh rate, orientation, scale, layout),
-appearance (window/terminal opacity, gaps, bar), accent colour, terminal themes, keybindings, Bluetooth and Wi-Fi.
+appearance (window/terminal opacity, gaps, tiling, bar), accent colour, terminal themes, keybindings, sound,
+Bluetooth and Wi-Fi.
 
   SettingsGUI.py            open the settings window
   SettingsGUI.py --bar-env  print the saved bar position/monitors as shell variables (used by polybar/launch.sh)
@@ -8,7 +9,7 @@ appearance (window/terminal opacity, gaps, bar), accent colour, terminal themes,
   SettingsGUI.py --dry-run  with --apply: print the commands instead of running them
 
 Changes are saved to ~/.config/i3/settings.json and applied immediately.
-No root needed.  Requires: python3, python3-gobject (GTK 3), xinput, xrandr (bluetoothctl / nmcli for those tabs).
+No root needed.  Requires: python3, python3-gobject (GTK 3), xinput, xrandr (pactl / bluetoothctl / nmcli for those tabs).
 """
 import json
 import os
@@ -61,7 +62,7 @@ def load_settings():
     if not isinstance(data, dict):
         data = {}
     # a hand-edited or damaged file must never crash the login-time apply: wrong types are dropped
-    for key in ("mouse", "monitors", "opacity", "gaps", "bar", "cursor", "apps", "keybinds", "themes", "colors"):
+    for key in ("mouse", "monitors", "opacity", "gaps", "bar", "cursor", "apps", "keybinds", "themes", "colors", "tiling", "sound", "terminal_font"):
         if key in data and not isinstance(data[key], dict):
             del data[key]
     sanitize_settings(data)
@@ -171,12 +172,26 @@ def sanitize_settings(data):
         return {k: v for k, v in c.items() if k in ("ghostty", "kitty") and isinstance(v, str)
                 and re.fullmatch(r"[^\"\\\n\r]{1,80}", v)}
 
+    def terminal_font(c):
+        out = {}
+        for k in ("ghostty", "kitty"):
+            v = clean_font_size(c.get(k))
+            if v:
+                out[k] = v
+        return out
+
+    def sound(c):
+        return {k: c[k] for k in ("volume_feedback", "screenshot_sound") if isinstance(c.get(k), bool)}
+
+    def tiling(c):
+        return {"mode": c["mode"]} if c.get("mode") in TILING_MODES else {}
+
     def colors(c):
         a = norm_accent(c.get("accent"))
         return {"accent": a} if a and brightness(a) >= ACCENT_MIN_BRIGHT else {}
 
     for key, fn in (("mouse", mouse), ("monitors", monitors), ("opacity", opacity), ("gaps", gaps), ("bar", bar),
-                    ("cursor", cursor), ("apps", apps), ("keybinds", keybinds), ("themes", themes), ("colors", colors)):
+                    ("cursor", cursor), ("apps", apps), ("keybinds", keybinds), ("themes", themes), ("colors", colors), ("tiling", tiling), ("sound", sound), ("terminal_font", terminal_font)):
         clean(key, fn)
     return data
 
@@ -680,6 +695,36 @@ def apply_themes(settings):
             subprocess.run(["pkill", "-USR1", "-x", "kitty"], capture_output=True)
 
 
+# ------------------------------------------------------------------ terminal text size (Ghostty, kitty)
+FONT_SIZE_DEFAULT = {"ghostty": 12.0, "kitty": 14.0}       # what the shipped configs use
+FONT_SIZE_RANGE = (6.0, 36.0)
+
+
+def clean_font_size(v):
+    """A text size in points, rounded to half points, or None if it is not a sensible number."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+        return None
+    if not FONT_SIZE_RANGE[0] <= v <= FONT_SIZE_RANGE[1]:
+        return None
+    return round(v * 2) / 2.0
+
+
+def current_font_size(kind):
+    if kind == "ghostty":
+        return clean_font_size(read_value(GHOSTTY_CONF, "font-size", FONT_SIZE_DEFAULT["ghostty"])) or FONT_SIZE_DEFAULT["ghostty"]
+    return clean_font_size(read_value(KITTY_CONF, "font_size", FONT_SIZE_DEFAULT["kitty"])) or FONT_SIZE_DEFAULT["kitty"]
+
+
+def apply_terminal_font(settings):
+    """Write the text size into the Ghostty / kitty config and make open terminals reload it."""
+    cfg = settings.get("terminal_font") or {}
+    gh, ki = clean_font_size(cfg.get("ghostty")), clean_font_size(cfg.get("kitty"))
+    if gh and set_conf_line(GHOSTTY_CONF, r"^[ \t]*font-size[ \t]*=.*$", "font-size = %g" % gh) and not DRY:
+        subprocess.run(["pkill", "-USR2", "-x", "ghostty"], capture_output=True)
+    if ki and set_conf_line(KITTY_CONF, r"^[ \t]*font_size[ \t].*$", "font_size %g" % ki) and not DRY:
+        subprocess.run(["pkill", "-USR1", "-x", "kitty"], capture_output=True)
+
+
 # ------------------------------------------------------------------ gaps between windows (i3)
 I3_CONFIG = os.path.join(CONFIG_DIR, "config")
 GAPS_DEFAULT = {"inner": 5, "outer": 0, "smart": True}
@@ -956,6 +1001,21 @@ def _apply_colors(settings):
         raise OSError("some colour files could not be written (%s)" % "; ".join(errors))
 
 
+# ------------------------------------------------------------------ window tiling (AutoTiling.py)
+TILING_MODES = ("dwindle", "classic")
+TILING_LABELS = [("dwindle", "Spiral, like Hyprland (new windows split the focused one)"),
+                 ("classic", "Classic i3 (new windows open side by side)")]
+AUTOTILING = os.path.join(CONFIG_DIR, "scripts", "AutoTiling.py")
+
+
+def apply_tiling(settings):
+    """The tiler reads the mode from settings.json by itself; just make sure it is running."""
+    if DRY or not os.path.exists(AUTOTILING):
+        return
+    subprocess.Popen([sys.executable, AUTOTILING], start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)      # exits at once if it already runs
+
+
 # ------------------------------------------------------------------ top bar (polybar)
 BAR_DEFAULT = {"position": "top", "monitors": None, "size": "large"}   # monitors None = every monitor
 # name -> (bar height px, font size pt). Font sizes are chosen so the text is a whole number of pixels
@@ -984,6 +1044,187 @@ def apply_bar(settings):
         print(bar_env(settings))
     elif os.path.exists(launch):
         subprocess.Popen([launch], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+# ------------------------------------------------------------------ sound (pactl: PipeWire or PulseAudio)
+PA_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,199}\Z")     # device names as PipeWire/PulseAudio make them
+PA_HINT = ("Sound control needs the pactl tool (it works with PipeWire and PulseAudio):\n"
+           "Fedora: sudo dnf install pulseaudio-utils   |   Arch: sudo pacman -S libpulse   |   "
+           "Debian/Ubuntu: sudo apt install pulseaudio-utils")
+VOLUME_MAX = 150                                                       # same limit as the volume keys
+SOUNDS_CONF = os.path.join(CONFIG_DIR, "sounds.conf")
+SOUND_DEFAULT = {"volume_feedback": True, "screenshot_sound": True}
+TEST_SOUNDS = ["/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga",
+               "/usr/share/sounds/freedesktop/stereo/bell.oga",
+               "/usr/share/sounds/freedesktop/stereo/complete.oga",
+               "/usr/share/sounds/alsa/Front_Center.wav"]
+
+
+def pa_ctl(args, timeout=6):
+    """Run pactl. Returns (ok, output); never raises."""
+    exe = shutil.which("pactl")
+    if not exe:
+        return False, "pactl is not installed"
+    try:
+        r = subprocess.run([exe] + list(args), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return False, "timed out"
+    except OSError as e:
+        return False, str(e)
+    return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+
+
+def _pa_percent(volume):
+    """Loudest channel of a pactl JSON volume map, in percent."""
+    best = 0
+    for ch in (volume or {}).values():
+        m = re.match(r"\s*(\d+)%", str(ch.get("value_percent", "")) if isinstance(ch, dict) else "")
+        if m:
+            best = max(best, int(m.group(1)))
+    return best
+
+
+def _pa_text_percent(text):
+    m = re.search(r"(\d+)%", text or "")
+    return int(m.group(1)) if m else 0
+
+
+def pa_default(kind):
+    """Name of the default sink/source."""
+    ok, out = pa_ctl(["get-default-" + kind])
+    if ok and out.strip() and "\n" not in out.strip():
+        return out.strip()
+    ok, out = pa_ctl(["info"])                    # older pactl: no get-default-*
+    m = re.search(r"^Default %s:\s*(\S+)" % ("Sink" if kind == "sink" else "Source"), out if ok else "", re.M)
+    return m.group(1) if m else ""
+
+
+def pa_devices(kind):
+    """[{'name','label','volume','mute'}] for kind 'sink' (outputs) or 'source' (microphones, without monitors)."""
+    ok, out = pa_ctl(["-f", "json", "list", kind + "s"])
+    devs = []
+    data = None
+    if ok:
+        try:
+            data = json.loads(out)
+        except ValueError:
+            data = None
+    if isinstance(data, list):
+        for d in data:
+            if not isinstance(d, dict):
+                continue
+            name = d.get("name") or ""
+            if not PA_NAME_RE.match(name):
+                continue
+            if kind == "source" and (name.endswith(".monitor") or d.get("monitor_of_sink") not in (None, "", "n/a")):
+                continue                          # a recording of an output, not a microphone
+            devs.append({"name": name, "label": d.get("description") or name,
+                         "volume": _pa_percent(d.get("volume")), "mute": bool(d.get("mute"))})
+        return devs
+    # older pactl without JSON output: names from the short list, volume/mute asked one by one
+    ok, out = pa_ctl(["list", "short", kind + "s"])
+    for line in (out if ok else "").splitlines():
+        f = line.split("\t")
+        if len(f) < 2 or not PA_NAME_RE.match(f[1]) or (kind == "source" and f[1].endswith(".monitor")):
+            continue
+        _o, vol = pa_ctl(["get-%s-volume" % kind, f[1]])
+        _o, mute = pa_ctl(["get-%s-mute" % kind, f[1]])
+        devs.append({"name": f[1], "label": f[1], "volume": _pa_text_percent(vol), "mute": "yes" in mute})
+    return devs
+
+
+def pa_streams():
+    """Apps playing sound now: [{'id','app','volume','mute'}]."""
+    ok, out = pa_ctl(["-f", "json", "list", "sink-inputs"])
+    try:
+        data = json.loads(out) if ok else None
+    except ValueError:
+        data = None
+    streams = []
+    for d in data if isinstance(data, list) else []:
+        if not isinstance(d, dict) or not isinstance(d.get("index"), int):
+            continue
+        props = d.get("properties") if isinstance(d.get("properties"), dict) else {}
+        app = props.get("application.name") or props.get("media.name") or "Unknown app"
+        streams.append({"id": d["index"], "app": str(app)[:60], "volume": _pa_percent(d.get("volume")),
+                        "mute": bool(d.get("mute"))})
+    return sorted(streams, key=lambda x: x["app"].lower())
+
+
+def pa_snapshot():
+    """Everything the Sound tab shows, read in one go (runs off the UI thread)."""
+    if not shutil.which("pactl"):
+        return {"available": False}
+    ok, _out = pa_ctl(["info"])
+    if not ok:
+        return {"available": False, "error": "No sound server is running (PipeWire or PulseAudio)."}
+    return {"available": True, "sinks": pa_devices("sink"), "sources": pa_devices("source"),
+            "default_sink": pa_default("sink"), "default_source": pa_default("source"), "streams": pa_streams()}
+
+
+def pa_set_default(kind, name):
+    """Make a device the default and move what is playing/recording now over to it."""
+    if kind not in ("sink", "source") or not PA_NAME_RE.match(name or ""):
+        return False, "invalid device"
+    ok, out = pa_ctl(["set-default-" + kind, name])
+    if not ok:
+        return False, out.strip()[-160:]
+    streams = "sink-inputs" if kind == "sink" else "source-outputs"
+    _ok, lst = pa_ctl(["list", "short", streams])
+    for line in lst.splitlines():
+        sid = line.split("\t")[0].strip()
+        if sid.isdigit():
+            pa_ctl(["move-%s" % streams[:-1], sid, name])
+    return True, ""
+
+
+def pa_set_volume(kind, target, pct):
+    """kind: sink / source (target = name) or sink-input (target = number)."""
+    pct = max(0, min(VOLUME_MAX, int(pct)))
+    if kind in ("sink", "source") and PA_NAME_RE.match(str(target)):
+        return pa_ctl(["set-%s-volume" % kind, str(target), "%d%%" % pct])
+    if kind == "sink-input" and str(target).isdigit():
+        return pa_ctl(["set-sink-input-volume", str(target), "%d%%" % pct])
+    return False, "invalid target"
+
+
+def pa_set_mute(kind, target, mute):
+    flag = "1" if mute else "0"
+    if kind in ("sink", "source") and PA_NAME_RE.match(str(target)):
+        return pa_ctl(["set-%s-mute" % kind, str(target), flag])
+    if kind == "sink-input" and str(target).isdigit():
+        return pa_ctl(["set-sink-input-mute", str(target), flag])
+    return False, "invalid target"
+
+
+def pa_test_sound(sink):
+    """Play a short sound on one output."""
+    snd = next((f for f in TEST_SOUNDS if os.path.isfile(f)), None)
+    if not snd:
+        return False, "no test sound found (install sound-theme-freedesktop)"
+    if shutil.which("paplay") and PA_NAME_RE.match(sink or ""):
+        cmd = ["paplay", "--device=" + sink, snd]
+    elif shutil.which("paplay"):
+        cmd = ["paplay", snd]
+    elif shutil.which("pw-play"):
+        cmd = ["pw-play", snd]
+    else:
+        return False, "no player found (install pulseaudio-utils)"
+    if DRY:
+        print("+", " ".join(cmd))
+        return True, ""
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return True, ""
+
+
+def apply_sound(settings):
+    """Write the sound-effect switches for Sounds.sh (volume keys and screenshots read it)."""
+    cfg = dict(SOUND_DEFAULT, **(settings.get("sound") or {}))
+    text = ("# Written by the Settings window (Sound tab). Read by scripts/Sounds.sh.\n"
+            "muteVolume=%s\nmuteScreenshots=%s\n" % ("false" if cfg["volume_feedback"] else "true",
+                                                     "false" if cfg["screenshot_sound"] else "true"))
+    if os.path.isdir(CONFIG_DIR):
+        _write_if_changed(SOUNDS_CONF, text)
 
 
 # ------------------------------------------------------------------ bluetooth (bluetoothctl / BlueZ)
@@ -1419,7 +1660,7 @@ def apply_apps(settings):
 
 def apply_all(settings):
     """Apply every saved setting. One failing step is reported but never stops the others."""
-    for step in (apply_mouse, apply_cursor, apply_monitors, apply_opacity, apply_themes, apply_colors, apply_gaps, apply_apps):
+    for step in (apply_mouse, apply_cursor, apply_monitors, apply_opacity, apply_themes, apply_terminal_font, apply_colors, apply_gaps, apply_apps, apply_sound):
         try:
             step(settings)
         except Exception as e:  # noqa: BLE001 - login must not break on a bad setting
@@ -1505,13 +1746,21 @@ def launch_gui(confirm=True):
         Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     win = Gtk.Window(title="Settings")
-    win.set_default_size(780, 600)
+    # fit the screen: on a small or scaled screen (e.g. a 1440x900 laptop) the buttons must stay visible
+    try:
+        disp = Gdk.Display.get_default()
+        mon_ = disp.get_primary_monitor() or disp.get_monitor(0)
+        wa = mon_.get_workarea()
+        win.set_default_size(min(1080, wa.width - 40), min(940, wa.height - 60))
+    except Exception:  # noqa: BLE001
+        win.set_default_size(1000, 760)
     win.set_position(Gtk.WindowPosition.CENTER)
     win.connect("destroy", Gtk.main_quit)
 
     root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
     win.add(root)
     nb = Gtk.Notebook()
+    nb.set_scrollable(True)                 # on a narrow screen the tab row scrolls instead of widening the window
     root.pack_start(nb, True, True, 0)
 
     def page():
@@ -1519,6 +1768,13 @@ def launch_gui(confirm=True):
         for side in ("top", "bottom", "start", "end"):
             getattr(box, "set_margin_" + side)(22)
         return box
+
+    def scrolled(box):
+        """Every tab scrolls, so the window never has to be taller than the screen."""
+        sw = Gtk.ScrolledWindow()
+        sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sw.add(box)
+        return sw
 
     def dim(text):
         lb = Gtk.Label(label=text, xalign=0)
@@ -1613,7 +1869,7 @@ def launch_gui(confirm=True):
 
     cur_combo.connect("changed", cursor_preview)
     cur_size.connect("changed", cursor_preview)
-    nb.append_page(mp, Gtk.Label(label="Mouse"))
+    nb.append_page(scrolled(mp), Gtk.Label(label="Mouse"))
 
     loading = {"v": False}
 
@@ -1875,7 +2131,7 @@ def launch_gui(confirm=True):
         stack.set_visible_child_name(ui["sel"])
     mon.pack_start(dim("After applying, you get 10 seconds to confirm - if the screen goes dark, "
                        "just wait and it reverts."), False, False, 0)
-    nb.append_page(mon, Gtk.Label(label="Displays"))
+    nb.append_page(scrolled(mon), Gtk.Label(label="Displays"))
 
     # ---------------- appearance tab
     ap = page()
@@ -1937,6 +2193,21 @@ def launch_gui(confirm=True):
     ap.pack_start(row("No gaps for a lone window", gap_smart), False, False, 0)
     ap.pack_start(dim("0 px = windows touch (no gap). Turning the last option on makes a single window "
                       "fill the screen. Changing it reloads i3 (your windows stay open)."), False, False, 0)
+
+    # window tiling section (same tab)
+    ap.pack_start(Gtk.Separator(), False, False, 6)
+    tl = Gtk.Label(label="Window tiling", xalign=0)
+    tl.get_style_context().add_class("title")
+    ap.pack_start(tl, False, False, 0)
+    tiling_mode = Gtk.ComboBoxText()
+    for key, label in TILING_LABELS:
+        tiling_mode.append(key, label)
+    tiling_mode.set_active_id((settings.get("tiling") or {}).get("mode") or "dwindle")
+    ap.pack_start(row("New windows", tiling_mode), False, False, 0)
+    ap.pack_start(dim("Spiral: each new window takes half of the window you are using - side by side when that window "
+                      "is wide, top and bottom when it is tall - just like Hyprland. Classic: new windows are added "
+                      "next to each other. Switch any time with SUPER+ALT+T. Tabbed and stacked groups "
+                      "(SUPER+ALT+2/3) and floating windows are never changed."), False, False, 0)
 
     # top bar section (same tab)
     ap.pack_start(Gtk.Separator(), False, False, 6)
@@ -2044,7 +2315,7 @@ def launch_gui(confirm=True):
         kb_view.append_column(tc)
     kb_scroll = Gtk.ScrolledWindow()
     kb_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-    kb_scroll.set_min_content_height(470)
+    kb_scroll.set_min_content_height(380)
     kb_scroll.add(kb_view)
     kp.pack_start(kb_scroll, True, True, 0)
     kb_btns = Gtk.Box(spacing=10)
@@ -2058,7 +2329,7 @@ def launch_gui(confirm=True):
     kp.pack_start(kb_btns, False, False, 0)
     kp.pack_start(dim("Rows with an application in brackets, like the file manager, terminal and browser, also have "
                       "Change application... to pick which program that key opens."), False, False, 0)
-    nb.append_page(kp, Gtk.Label(label="Keybindings"))
+    nb.append_page(scrolled(kp), Gtk.Label(label="Keybindings"))
 
     def kb_selected_id():
         model, it = kb_view.get_selection().get_selected()
@@ -2283,8 +2554,242 @@ def launch_gui(confirm=True):
             GLib.timeout_add_seconds(3, lambda w=w: (w.destroy(), False)[1])
     ident_btn.connect("clicked", identify)
 
-    # ---------------- bluetooth tab
+    # ---------------- sound tab
     import threading
+    import time as _time
+    sp = page()
+    snd_msg = dim("")
+
+    def volume_row(title):
+        """[label] [0-150% slider with a 100% mark] [Mute switch]"""
+        sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, VOLUME_MAX, 1)
+        sc.set_digits(0)
+        sc.set_value_pos(Gtk.PositionType.RIGHT)
+        sc.add_mark(100, Gtk.PositionType.BOTTOM, "100%")
+        sc.connect("format-value", lambda _s, v: "%d%%" % v)
+        mute = Gtk.Switch()
+        mute.set_valign(Gtk.Align.CENTER)
+        box = Gtk.Box(spacing=12)
+        box.pack_start(sc, True, True, 0)
+        box.pack_start(Gtk.Label(label="Mute"), False, False, 0)
+        box.pack_start(mute, False, False, 0)
+        return row(title, box), sc, mute
+
+    out_title = Gtk.Label(label="Output", xalign=0)
+    out_title.get_style_context().add_class("title")
+    sp.pack_start(out_title, False, False, 0)
+    out_combo = Gtk.ComboBoxText()
+    sp.pack_start(row("Play sound on", out_combo), False, False, 0)
+    out_row, out_vol, out_mute = volume_row("Volume")
+    sp.pack_start(out_row, False, False, 0)
+    out_btns = Gtk.Box(spacing=10)
+    snd_test = Gtk.Button(label="Play test sound")
+    out_btns.pack_start(snd_test, False, False, 0)
+    sp.pack_start(row("", out_btns), False, False, 0)
+
+    in_title = Gtk.Label(label="Microphone", xalign=0)
+    in_title.get_style_context().add_class("title")
+    sp.pack_start(in_title, False, False, 0)
+    in_combo = Gtk.ComboBoxText()
+    sp.pack_start(row("Record from", in_combo), False, False, 0)
+    in_row, in_vol, in_mute = volume_row("Input level")
+    sp.pack_start(in_row, False, False, 0)
+
+    apps_title = Gtk.Label(label="Apps playing sound", xalign=0)
+    apps_title.get_style_context().add_class("title")
+    sp.pack_start(apps_title, False, False, 0)
+    apps_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    sp.pack_start(apps_box, False, False, 0)
+
+    fx_title = Gtk.Label(label="Sound effects", xalign=0)
+    fx_title.get_style_context().add_class("title")
+    sp.pack_start(fx_title, False, False, 0)
+    snd_saved = dict(SOUND_DEFAULT, **(settings.get("sound") or {}))
+    fx_vol = Gtk.Switch()
+    fx_vol.set_halign(Gtk.Align.START)
+    fx_vol.set_active(snd_saved["volume_feedback"])
+    sp.pack_start(row("Volume change sound", fx_vol), False, False, 0)
+    fx_shot = Gtk.Switch()
+    fx_shot.set_halign(Gtk.Align.START)
+    fx_shot.set_active(snd_saved["screenshot_sound"])
+    sp.pack_start(row("Screenshot sound", fx_shot), False, False, 0)
+
+    snd_btns = Gtk.Box(spacing=10)
+    snd_refresh = Gtk.Button(label="Refresh")
+    snd_mixer = Gtk.Button(label="Open full mixer")
+    mixer_exe = shutil.which("pavucontrol") or shutil.which("pwvucontrol")
+    snd_mixer.set_sensitive(bool(mixer_exe))
+    snd_btns.pack_start(snd_refresh, False, False, 0)
+    snd_btns.pack_start(snd_mixer, False, False, 0)
+    sp.pack_start(snd_btns, False, False, 0)
+    sp.pack_start(snd_msg, False, False, 0)
+    sp.pack_start(dim("Devices and volumes change right away (the volume keys use the same output). "
+                      "The sound-effect switches are saved when you press Apply."), False, False, 0)
+    sp_scroll = Gtk.ScrolledWindow()
+    sp_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    sp_scroll.add(sp)
+    nb.append_page(sp_scroll, Gtk.Label(label="Sound"))
+
+    snd = {"loading": False, "pending": {}, "timer": None, "last_user": 0.0, "busy": False, "streams": None,
+           "sinks": {}, "sources": {}}
+    snd_live = (out_combo, out_vol, out_mute, snd_test, in_combo, in_vol, in_mute)
+
+    def snd_worker(jobs):
+        """Run pactl changes off the UI thread; report the first failure."""
+        def go():
+            err = None
+            for fn in jobs:
+                try:
+                    ok, out = fn()
+                except Exception as e:  # noqa: BLE001
+                    ok, out = False, str(e)
+                if not ok and err is None:
+                    err = (out or "").strip()[-140:] or "failed"
+            if err:
+                GLib.idle_add(lambda: (snd_msg.set_text("Could not change the sound setting: " + err), False)[1])
+        threading.Thread(target=go, daemon=True).start()
+
+    def snd_flush():
+        snd["timer"] = None
+        jobs = list(snd["pending"].values())
+        snd["pending"].clear()
+        if jobs:
+            snd_worker(jobs)
+        return False
+
+    def snd_send(key, fn):
+        """Collect fast slider moves and send only the latest value (every 90 ms at most)."""
+        if snd["loading"]:
+            return
+        snd["pending"][key] = fn
+        snd["last_user"] = _time.monotonic()
+        if snd["timer"] is None:
+            snd["timer"] = GLib.timeout_add(90, snd_flush)
+
+    def snd_set(widget_value):
+        snd["loading"] = True
+        try:
+            widget_value()
+        finally:
+            snd["loading"] = False
+
+    def build_apps(streams):
+        for child in apps_box.get_children():
+            apps_box.remove(child)
+        if not streams:
+            apps_box.pack_start(dim("No app is playing sound right now."), False, False, 0)
+        for st in streams:
+            r_, sc_, mu_ = volume_row(st["app"])
+            sc_.set_value(st["volume"])
+            mu_.set_active(st["mute"])
+            sid = st["id"]
+            sc_.connect("value-changed", lambda w, sid=sid: snd_send(("app-vol", sid), lambda v=int(w.get_value()): pa_set_volume("sink-input", sid, v)))
+            mu_.connect("notify::active", lambda w, _p, sid=sid: snd_send(("app-mute", sid), lambda m=w.get_active(): pa_set_mute("sink-input", sid, m)))
+            r_.stream_widgets = (sc_, mu_)
+            apps_box.pack_start(r_, False, False, 0)
+        apps_box.show_all()
+
+    def snd_fill(res, note=None):
+        snd["busy"] = False
+        if _time.monotonic() - snd["last_user"] < 1.5 or snd["pending"]:
+            return False                              # the user is moving a slider right now: do not jump it back
+        snd["loading"] = True
+        try:
+            ok = bool(res.get("available"))
+            for w in snd_live:
+                w.set_sensitive(ok)
+            if not ok:
+                snd_msg.set_text(res.get("error") or PA_HINT)
+                out_combo.remove_all()
+                in_combo.remove_all()
+                build_apps([])
+                return False
+            snd["sinks"] = {d["name"]: d for d in res["sinks"]}
+            snd["sources"] = {d["name"]: d for d in res["sources"]}
+            for combo, devs, cur in ((out_combo, res["sinks"], res["default_sink"]),
+                                     (in_combo, res["sources"], res["default_source"])):
+                if [r[0] for r in combo.get_model()] != [d["label"] for d in devs] or combo.get_active_id() != cur:
+                    combo.remove_all()
+                    for d in devs:
+                        combo.append(d["name"], d["label"])
+                    if not combo.set_active_id(cur) and devs:
+                        combo.set_active(0)
+            sink = snd["sinks"].get(out_combo.get_active_id() or "")
+            src = snd["sources"].get(in_combo.get_active_id() or "")
+            for dev, vol_w, mute_w in ((sink, out_vol, out_mute), (src, in_vol, in_mute)):
+                vol_w.set_sensitive(bool(dev))
+                mute_w.set_sensitive(bool(dev))
+                if dev:
+                    vol_w.set_value(dev["volume"])
+                    mute_w.set_active(dev["mute"])
+            ids = [x["id"] for x in res["streams"]]
+            rows = [c for c in apps_box.get_children() if hasattr(c, "stream_widgets")]
+            if snd["streams"] != ids:
+                snd["streams"] = ids
+                build_apps(res["streams"])
+            else:
+                for r_, st in zip(rows, res["streams"]):
+                    r_.stream_widgets[0].set_value(st["volume"])
+                    r_.stream_widgets[1].set_active(st["mute"])
+            snd_msg.set_text(note or ("" if res["sinks"] else "No output device was found."))
+        finally:
+            snd["loading"] = False
+        return False
+
+    def snd_reload(note=None):
+        if snd["busy"]:
+            return
+        snd["busy"] = True
+
+        def go():
+            try:
+                res = pa_snapshot()
+            except Exception as e:  # noqa: BLE001
+                res = {"available": False, "error": str(e)}
+            GLib.idle_add(snd_fill, res, note)
+        threading.Thread(target=go, daemon=True).start()
+
+    def on_device(combo, kind):
+        if snd["loading"]:
+            return
+        name = combo.get_active_id()
+        if not name:
+            return
+
+        def go():
+            ok, out = pa_set_default(kind, name)
+            GLib.idle_add(lambda: (snd_reload(None if ok else "Could not switch: " + out), False)[1])
+        snd["last_user"] = 0.0
+        threading.Thread(target=go, daemon=True).start()
+    out_combo.connect("changed", on_device, "sink")
+    in_combo.connect("changed", on_device, "source")
+    out_vol.connect("value-changed", lambda w: snd_send(("vol", "sink"), lambda n=out_combo.get_active_id(), v=int(w.get_value()): pa_set_volume("sink", n, v)))
+    in_vol.connect("value-changed", lambda w: snd_send(("vol", "source"), lambda n=in_combo.get_active_id(), v=int(w.get_value()): pa_set_volume("source", n, v)))
+    out_mute.connect("notify::active", lambda w, _p: snd_send(("mute", "sink"), lambda n=out_combo.get_active_id(), m=w.get_active(): pa_set_mute("sink", n, m)))
+    in_mute.connect("notify::active", lambda w, _p: snd_send(("mute", "source"), lambda n=in_combo.get_active_id(), m=w.get_active(): pa_set_mute("source", n, m)))
+
+    def on_test(*_):
+        ok, out = pa_test_sound(out_combo.get_active_id())
+        snd_msg.set_text("" if ok else "Could not play a test sound: " + out)
+    snd_test.connect("clicked", on_test)
+    snd_refresh.connect("clicked", lambda *_: (snd.update(last_user=0.0), snd_reload()))
+    snd_mixer.connect("clicked", lambda *_: mixer_exe and subprocess.Popen(
+        [mixer_exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+
+    def snd_tick():
+        if nb.get_current_page() == nb.page_num(sp_scroll) and _time.monotonic() - snd["last_user"] > 2:
+            snd_reload()                              # apps start and stop playing: keep the list current
+        return True
+    GLib.timeout_add_seconds(3, snd_tick)
+
+    def on_snd_page(_nb, _page, num):
+        if num == nb.page_num(sp_scroll):
+            snd["last_user"] = 0.0
+            snd_reload()
+        return False
+    nb.connect("switch-page", on_snd_page)
+
+    # ---------------- bluetooth tab
     bp = page()
     bt_title = Gtk.Label(label="Bluetooth", xalign=0)
     bt_title.get_style_context().add_class("title")
@@ -2342,7 +2847,8 @@ def launch_gui(confirm=True):
     bp.pack_start(add_btns, False, False, 0)
     bp.pack_start(bt_msg, False, False, 0)
     bt_manager.set_sensitive(bool(shutil.which("blueman-manager")))
-    nb.append_page(bp, Gtk.Label(label="Bluetooth"))
+    bp_page = scrolled(bp)
+    nb.append_page(bp_page, Gtk.Label(label="Bluetooth"))
 
     bt_busy = {"n": 0, "power_ui": False}
     bt_all = (bt_power_sw, bt_connect, bt_disconnect, bt_forget, bt_refresh, bt_search, bt_pair_btn)
@@ -2466,7 +2972,7 @@ def launch_gui(confirm=True):
     bt_loaded = {"done": False}
 
     def on_page(_nb, _page, num):
-        if num == nb.page_num(bp) and not bt_loaded["done"]:
+        if num == nb.page_num(bp_page) and not bt_loaded["done"]:
             bt_loaded["done"] = True
             bt_reload()
         return False
@@ -2507,7 +3013,8 @@ def launch_gui(confirm=True):
     wp.pack_start(wf_btns2, False, False, 0)
     wf_msg = dim("")
     wp.pack_start(wf_msg, False, False, 0)
-    nb.append_page(wp, Gtk.Label(label="Wi-Fi"))
+    wp_page = scrolled(wp)
+    nb.append_page(wp_page, Gtk.Label(label="Wi-Fi"))
 
     wf_busy = {"n": 0, "ui": False, "iface": "", "nets": {}}
     wf_all = (wf_power, wf_connect, wf_disconnect, wf_forget, wf_rescan, wf_hidden)
@@ -2692,7 +3199,7 @@ def launch_gui(confirm=True):
     wf_loaded = {"done": False}
 
     def on_wf_page(_nb, _page, num):
-        if num == nb.page_num(wp) and not wf_loaded["done"]:
+        if num == nb.page_num(wp_page) and not wf_loaded["done"]:
             wf_loaded["done"] = True
             wf_reload()
         return False
@@ -2703,9 +3210,15 @@ def launch_gui(confirm=True):
     tt = Gtk.Label(label="Terminal themes", xalign=0)
     tt.get_style_context().add_class("title")
     tp.pack_start(tt, False, False, 0)
-    tp.pack_start(dim("Pick a colour theme for each terminal. The preview shows the background, text and the 16 "
-                      "terminal colours. Press Apply to use it; open terminals reload by themselves."), False, False, 0)
+    tp.pack_start(dim("Pick a colour theme and a text size for each terminal. The preview shows the background, the "
+                      "text at the chosen size and the 16 terminal colours. Press Apply to use them; open terminals "
+                      "reload by themselves (a Ghostty window you zoomed with Ctrl +/- keeps its own size)."),
+                  False, False, 0)
     theme_pick = {}                                  # kind -> function returning the chosen theme name
+    font_pick = {}                                   # kind -> function returning the chosen text size
+    prev_font = ("FantasqueSansM Nerd Font Mono" if "FantasqueSansM Nerd Font Mono" in query(["fc-list", ":", "family"])
+                 else "monospace")
+    saved_font = settings.get("terminal_font") or {}
 
     def theme_section(kind, title, themes, current):
         lbl = Gtk.Label(label=title, xalign=0)
@@ -2735,6 +3248,23 @@ def launch_gui(confirm=True):
         prev = Gtk.DrawingArea()
         prev.set_size_request(-1, 92)
         cur = {"name": current if current in themes else None, "colors": None}
+        size_now = clean_font_size(saved_font.get(kind)) or current_font_size(kind)
+        size = Gtk.SpinButton.new_with_range(FONT_SIZE_RANGE[0], FONT_SIZE_RANGE[1], 0.5)
+        size.set_digits(1)
+        size.set_value(size_now)
+        size_reset = Gtk.Button(label="Default (%g)" % FONT_SIZE_DEFAULT[kind])
+        size_box = Gtk.Box(spacing=10)
+        size_box.pack_start(size, False, False, 0)
+        size_box.pack_start(Gtk.Label(label="pt"), False, False, 0)
+        size_box.pack_start(size_reset, False, False, 0)
+        size_reset.connect("clicked", lambda *_: size.set_value(FONT_SIZE_DEFAULT[kind]))
+
+        def preview_height():
+            px = size.get_value() * 96 / 72.0                       # points -> pixels at 96 dpi
+            prev.set_size_request(-1, int(px * 1.6 + 60))
+            prev.queue_draw()
+        size.connect("value-changed", lambda *_: preview_height())
+        font_pick[kind] = lambda: clean_font_size(size.get_value())
 
         def show(name):
             cur["name"] = name
@@ -2753,13 +3283,15 @@ def launch_gui(confirm=True):
             cr.rectangle(0, 0, w_, h_)
             cr.fill()
             cr.set_source_rgb(*hexrgb(c["fg"]))
-            cr.select_font_face("monospace")
-            cr.set_font_size(15)
-            cr.move_to(12, 26)
+            cr.select_font_face(prev_font)
+            px = size.get_value() * 96 / 72.0                       # the real size the terminal will use
+            cr.set_font_size(px)
+            cr.move_to(12, 10 + px)
             cr.show_text("user@host:~$ ls --color  The quick brown fox")
+            top = int(px * 1.6) + 14
             for i, col in enumerate(c["palette"]):
                 x = 12 + (i % 8) * 34
-                y = 42 + (i // 8) * 22
+                y = top + (i // 8) * 22
                 cr.set_source_rgb(*hexrgb(col))
                 cr.rectangle(x, y, 30, 18)
                 cr.fill()
@@ -2778,7 +3310,9 @@ def launch_gui(confirm=True):
         search.connect("search-changed", on_search)
         tp.pack_start(search, False, False, 0)
         tp.pack_start(sc_, True, True, 0)
+        tp.pack_start(row("Text size", size_box, 120), False, False, 0)
         tp.pack_start(prev, False, False, 0)
+        preview_height()
         theme_pick[kind] = lambda: cur["name"]
         if cur["name"]:
             for i, r_ in enumerate(flt):
@@ -2792,7 +3326,7 @@ def launch_gui(confirm=True):
     gh_themes, ki_themes = list_ghostty_themes(), list_kitty_themes()
     theme_section("ghostty", "Ghostty", gh_themes, saved_t.get("ghostty") or current_theme("ghostty"))
     theme_section("kitty", "kitty", ki_themes, saved_t.get("kitty") or current_theme("kitty"))
-    nb.insert_page(tp, Gtk.Label(label="Themes"), 3)
+    nb.insert_page(scrolled(tp), Gtk.Label(label="Themes"), 3)
 
     # ---------------- colors tab
     cp = page()
@@ -2900,7 +3434,7 @@ def launch_gui(confirm=True):
             set_accent(hx, from_entry=True)
     custom_entry.connect("changed", on_custom)
     set_accent(acc["v"])
-    nb.insert_page(cp, Gtk.Label(label="Colors"), 3)
+    nb.insert_page(scrolled(cp), Gtk.Label(label="Colors"), 3)
 
     # ---------------- buttons
     bar = Gtk.Box(spacing=10)
@@ -2982,6 +3516,10 @@ def launch_gui(confirm=True):
         if picked:
             settings["themes"] = picked
             safe("themes", apply_themes, settings)
+        sizes = {k: f() for k, f in font_pick.items() if f()}
+        if sizes:
+            settings["terminal_font"] = sizes
+            safe("text size", apply_terminal_font, settings)
         settings["colors"] = {"accent": acc["v"]}
         safe("colors", apply_colors, settings)
         provider.load_from_data(css_for(acc["v"]))
@@ -2990,6 +3528,10 @@ def launch_gui(confirm=True):
         safe("gaps", apply_gaps, settings, reload=True)
         settings["apps"] = dict(app_new)
         safe("apps", apply_apps, settings)
+        settings["tiling"] = {"mode": tiling_mode.get_active_id() or "dwindle"}
+        safe("tiling", apply_tiling, settings)
+        settings["sound"] = {"volume_feedback": fx_vol.get_active(), "screenshot_sound": fx_shot.get_active()}
+        safe("sound", apply_sound, settings)
         safe("keybindings", kb_commit)
         chosen = [n for n, cb in bar_checks.items() if cb.get_active()]
         if bar_all.get_active() or not chosen:
@@ -3007,10 +3549,15 @@ def launch_gui(confirm=True):
         settings["monitors"] = new_mon or settings.get("monitors", {})
         try:
             apply_mouse(settings)
-            changed = bool(new_mon) and new_mon != {k: v for k, v in before.items() if k in new_mon}
+            # only a real layout change (resolution, rate, rotation, scale, position, on/off) needs the 10-second
+            # "Keep?" question; making a screen primary cannot leave you with a dark screen
+            def risky(d):
+                return {k: {f: v for f, v in c.items() if f != "primary"} for k, c in d.items() if isinstance(c, dict)}
+            changed = bool(new_mon) and risky(new_mon) != risky({k: v for k, v in before.items() if k in new_mon})
+            any_change = bool(new_mon) and new_mon != {k: v for k, v in before.items() if k in new_mon}
             if new_mon:
                 apply_monitors(settings)
-                refresh_desktop(changed)
+                refresh_desktop(any_change)          # (a new primary screen moves the tray: redraw the bar)
             if changed and confirm and not DRY and not ask_keep():
                 settings["monitors"] = before
                 apply_monitors(settings)
