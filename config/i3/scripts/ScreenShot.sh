@@ -2,7 +2,6 @@
 # X11 version of the grim/slurp script. Needs: maim xdotool xclip (optional: swappy/flameshot)
 dir="$HOME/Pictures/Screenshots"; mkdir -p "$dir"
 f="$dir/Screenshot_$(date +%d-%b_%H-%M-%S)_$RANDOM.png"
-icons="${XDG_CONFIG_HOME:-$HOME/.config}/i3/icons"
 finish() {
   [ -s "$f" ] || { notify-send -u low "Screenshot" "cancelled"; exit 1; }
   xclip -selection clipboard -t image/png -i "$f"

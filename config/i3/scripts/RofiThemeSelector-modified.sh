@@ -16,7 +16,6 @@ flock -n 9 || exit 0
 iDIR="${XDG_CONFIG_HOME:-$HOME/.config}/i3/images"
 
 
-OS="linux"
 
 ROFI=$(command -v rofi)
 SED=$(command -v sed)
@@ -102,7 +101,7 @@ add_theme_to_config() {
     fi
 
     # Convert path to use ~ for home directory
-    theme_path_with_tilde="~${theme_path#$HOME}"
+    theme_path_with_tilde="~${theme_path#"$HOME"}"
 
     # Add or update @theme line in config
     if ! grep -q '^\s*@theme' "$rofi_config_file"; then
@@ -120,7 +119,7 @@ add_theme_to_config() {
 
     if [ "$total_lines" -gt "$max_lines" ]; then
         excess=$((total_lines - max_lines))
-        for i in $(seq 1 "$excess"); do
+        for _ in $(seq 1 "$excess"); do
             $SED -i '0,/^\s*\/\/@theme/ { /^\s*\/\/@theme/ {d; q; }}' "$rofi_config_file"
         done
         echo "Removed excess //@theme lines"
@@ -157,18 +156,20 @@ select_theme()
 {
     local MORE_FLAGS=(-dmenu -format i -no-custom -p "Theme" -markup -config "${TMP_CONFIG_FILE}" -i)
     MORE_FLAGS+=(-kb-custom-1 "Alt-a")
-    MORE_FLAGS+=(-u 2,3 -a 4,5 )
+    # (rofi takes the row lists "2,3" and "4,5" as single arguments)
+    # shellcheck disable=SC2054
+    MORE_FLAGS+=(-u 2,3 -a 4,5)
     local CUR="default"
     while true
     do
         declare -i RTR
         declare -i RES
-        local MESG="""You can preview themes by hitting <b>Enter</b>.
+        local MESG="You can preview themes by hitting <b>Enter</b>.
 <b>Alt-a</b> to accept the new theme.
 <b>Escape</b> to cancel
 Current theme: <b>${CUR}</b>
 <span weight=\"bold\" size=\"xx-small\">When setting a new theme this will override previous theme settings.
-Please update your config file if you have local modifications.</span>"""
+Please update your config file if you have local modifications.</span>"
         # Build the theme flag as an array so a path containing whitespace
         # (or glob chars) is passed as a single argument instead of being
         # re-split by the shell.

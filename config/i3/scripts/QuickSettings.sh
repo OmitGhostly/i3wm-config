@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 cfgd="${XDG_CONFIG_HOME:-$HOME/.config}"
 source "$cfgd/i3/defaults.conf" 2>/dev/null
+# (term / editor may hold extra words, e.g. editor="code -w", so they are split on purpose)
+# shellcheck disable=SC2086
 edit() { ${term:-kitty} -e ${editor:-nano} "$1"; }
 pkill rofi 2>/dev/null
 c=$(printf '%s\n' "Edit i3 config" "Edit defaults (apps)" "Edit polybar" "Edit picom" "Edit rofi config" "Edit dunst" "Change wallpaper" "Reload i3" "Restart i3" "Refresh bar/colors" |

@@ -16,7 +16,7 @@ if [ -e "$wall" ] && [ -n "$im" ]; then
 fi
 if i3lock --version 2>&1 | grep -qi 'color'; then
   args+=(--clock --indicator --time-str="%H:%M" --date-str="%A, %d %B" --radius 90 --ring-width 6
-    --inside-color=00000066 --ring-color=${ACCENT}ff --line-color=00000000 --keyhl-color=${ACCENT_MUTED}ff --bshl-color=${ACCENT}55
-    --time-color=${ACCENT}ff --date-color=${ACCENT}ff)
+    --inside-color=00000066 "--ring-color=${ACCENT}ff" --line-color=00000000 "--keyhl-color=${ACCENT_MUTED}ff"
+    "--bshl-color=${ACCENT}55" "--time-color=${ACCENT}ff" "--date-color=${ACCENT}ff")
 fi
 exec i3lock "${args[@]}"

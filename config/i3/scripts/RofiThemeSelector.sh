@@ -42,7 +42,7 @@ apply_rofi_theme_to_config() {
   fi
 
   # Use ~ for the home directory in the config path
-  local theme_path_with_tilde="~${theme_path#$HOME}"
+  local theme_path_with_tilde="~${theme_path#"$HOME"}"
 
   # Create a temporary file to safely edit the config
   local temp_rofi_config_file

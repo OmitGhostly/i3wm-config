@@ -45,8 +45,9 @@ get_icon() {
 
 # Notify
 notify_user() {
-    local muted="$(pamixer --get-mute)"
-    local level="$(pamixer --get-volume)"
+    local muted level
+    muted="$(pamixer --get-mute)"
+    level="$(pamixer --get-volume)"
 
     if [[ "$muted" == "true" || "$level" -eq 0 ]]; then
         notify-send -e -h string:x-canonical-private-synchronous:volume_notif \
@@ -97,8 +98,9 @@ toggle_mic() {
 }
 # Get Mic Icon
 get_mic_icon() {
-    local muted="$(pamixer --default-source --get-mute)"
-    local current="$(pamixer --default-source --get-volume)"
+    local muted current
+    muted="$(pamixer --default-source --get-mute)"
+    current="$(pamixer --default-source --get-volume)"
     if [[ "$muted" == "true" || "$current" -eq "0" ]]; then
         echo "$iDIR/microphone-mute.png"
     else
@@ -124,8 +126,9 @@ get_mic_volume() {
 
 # Notify for Microphone
 notify_mic_user() {
-    local muted="$(pamixer --default-source --get-mute)"
-    local level="$(pamixer --default-source --get-volume)"
+    local muted level
+    muted="$(pamixer --default-source --get-mute)"
+    level="$(pamixer --default-source --get-volume)"
     local icon
 
     if [[ "$muted" == "true" || "$level" -eq 0 ]]; then

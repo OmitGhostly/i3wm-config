@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""i3wm-dots settings window: mouse and cursor, displays (resolution, refresh rate, orientation, scale, layout),
-appearance (window/terminal opacity, gaps, tiling, bar), accent colour, terminal themes, keybindings, sound,
-Bluetooth and Wi-Fi.
+"""i3wm-dots settings window: mouse, touchpad gestures and cursor, displays (resolution, refresh rate, orientation,
+scale, layout), appearance (window/terminal opacity, gaps, tiling, bar), accent colour, terminal themes,
+keybindings, sound, Bluetooth and Wi-Fi.
 
   SettingsGUI.py            open the settings window
-  SettingsGUI.py --bar-env  print the saved bar position/monitors as shell variables (used by polybar/launch.sh)
+  SettingsGUI.py --bar-env  print the saved bar settings as shell variables and write polybar/style.ini
+                            (used by polybar/launch.sh)
   SettingsGUI.py --apply    apply the saved settings (run at every i3 start, no GTK needed)
+  SettingsGUI.py --refresh-files  write the saved settings into the config files only (used by install.sh)
+  SettingsGUI.py --gestures print "on" or "off": are the touchpad swipe gestures switched on (used by Gestures.sh)
+  SettingsGUI.py --wifi-icon  print "on" or "off": show the Wi-Fi applet's tray icon (used by NetApplet.sh)
   SettingsGUI.py --dry-run  with --apply: print the commands instead of running them
   SettingsGUI.py --tab NAME open on a tab: mouse displays appearance colors themes keybindings sound bluetooth wifi
 
@@ -14,6 +18,8 @@ No root needed.  Requires: python3, python3-gobject (GTK 3), xinput, xrandr (pac
 """
 import json
 import os
+import glob
+import math
 import re
 import shlex
 import shutil
@@ -27,6 +33,7 @@ ROTATIONS = [("normal", "Landscape"), ("left", "Portrait (left)"),
              ("right", "Portrait (right)"), ("inverted", "Landscape (flipped)")]
 SCALES = [100, 125, 150, 175, 200, 250, 300]     # screen scale in percent
 DRY = False
+FILES_ONLY = False       # --refresh-files: write the config files, but run nothing (no reloads, no X changes)
 
 
 # ------------------------------------------------------------------ helpers
@@ -34,6 +41,8 @@ def run(cmd, check=False):
     """Run a command list; in dry-run mode just print it."""
     if DRY:
         print("+", " ".join(shlex.quote(c) for c in cmd))
+        return ""
+    if FILES_ONLY:
         return ""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
@@ -63,7 +72,8 @@ def load_settings():
     if not isinstance(data, dict):
         data = {}
     # a hand-edited or damaged file must never crash the login-time apply: wrong types are dropped
-    for key in ("mouse", "monitors", "opacity", "gaps", "bar", "cursor", "apps", "keybinds", "themes", "colors", "tiling", "sound", "terminal_font"):
+    for key in ("mouse", "monitors", "opacity", "gaps", "bar", "cursor", "apps", "keybinds", "themes", "colors", "tiling", "sound",
+                "terminal_font", "gestures", "network"):
         if key in data and not isinstance(data[key], dict):
             del data[key]
     sanitize_settings(data)
@@ -140,15 +150,19 @@ def sanitize_settings(data):
         out = {}
         if c.get("position") in ("top", "bottom"):
             out["position"] = c["position"]
-        if c.get("size") in BAR_SIZES:
-            out["size"] = c["size"]
-        if c.get("style") in dict(BAR_STYLES):
-            out["style"] = c["style"]
-        if c.get("divider") in dict(BAR_DIVIDERS):
-            out["divider"] = c["divider"]
+        size, style, divider = (c.get(k) if isinstance(c.get(k), str) else None for k in ("size", "style", "divider"))
+        style = BAR_STYLE_ALIASES.get(style, style)       # (only strings get here: a list would not hash)
+        if size in BAR_SIZES:
+            out["size"] = size
+        if style in dict(BAR_STYLES):
+            out["style"] = style
+        if divider in dict(BAR_DIVIDERS):
+            out["divider"] = divider
         for k in ("title", "media"):
             if isinstance(c.get(k), bool):
                 out[k] = c[k]
+        if _num(c.get("spacing"), 0, BAR_SPACING_MAX) is not None:
+            out["spacing"] = clean_spacing(c["spacing"])
         mons = c.get("monitors")
         if isinstance(mons, list) and mons and all(isinstance(n, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,32}", n) for n in mons):
             out["monitors"] = mons
@@ -194,12 +208,19 @@ def sanitize_settings(data):
     def tiling(c):
         return {"mode": c["mode"]} if c.get("mode") in TILING_MODES else {}
 
+    def gestures(c):
+        return {k: c[k] for k in GESTURES_DEFAULT if isinstance(c.get(k), bool)}
+
+    def network(c):
+        return {"tray_icon": c["tray_icon"]} if isinstance(c.get("tray_icon"), bool) else {}
+
     def colors(c):
         a = norm_accent(c.get("accent"))
         return {"accent": a} if a and brightness(a) >= ACCENT_MIN_BRIGHT else {}
 
     for key, fn in (("mouse", mouse), ("monitors", monitors), ("opacity", opacity), ("gaps", gaps), ("bar", bar),
-                    ("cursor", cursor), ("apps", apps), ("keybinds", keybinds), ("themes", themes), ("colors", colors), ("tiling", tiling), ("sound", sound), ("terminal_font", terminal_font)):
+                    ("cursor", cursor), ("apps", apps), ("keybinds", keybinds), ("themes", themes), ("colors", colors), ("tiling", tiling), ("sound", sound), ("terminal_font", terminal_font),
+                    ("gestures", gestures), ("network", network)):
         clean(key, fn)
     return data
 
@@ -511,7 +532,7 @@ def apply_cursor(settings):
     _write_if_changed(gtk, text)
     if DRY:
         print("+ xrdb -merge  (Xcursor.theme: %s, Xcursor.size: %d)" % (theme, size))
-    else:
+    elif not FILES_ONLY:
         try:
             subprocess.run(["xrdb", "-merge"], input="Xcursor.theme: %s\nXcursor.size: %d\n" % (theme, size),
                            text=True, capture_output=True, timeout=10)
@@ -897,19 +918,15 @@ def readable_on(bg):
 
 
 def _polybar_colors(c):
-    segs = "".join("seg%d = %s\nsegfg%d = %s\n" % (i, bg, i, fg) for i, (bg, fg) in enumerate(bar_segments(c["A"]), 1))
-    return """; Palette: black / greys + one accent colour. Written by the Settings window (Colors tab); safe to hand-edit.
-[colors]
-background = #f2000000
-background-alt = #1c1c1c
-foreground = #e6e6e6
-primary = %(A)s
-secondary = %(S)s
-alert = %(A)s
-disabled = #6e6e6e
-line = #303030
-; "blocks" bar style: one colour per block, dark -> accent, and the text colour on it
-""" % c + segs
+    v = bar_colors(c["A"])
+    keys = ["background", "background-alt", "foreground", "primary", "secondary", "alert", "disabled", "line"]
+    out = ["; Palette: black / greys + one accent colour. Written by the Settings window (Colors tab); safe to hand-edit.",
+           "[colors]"] + ["%s = %s" % (k, v[k]) for k in keys]
+    out.append("; the bar styles (Settings > Appearance > Bar style): one colour, alternating, dark, then the 13 shades "
+               "from dark to the colour (gradient / powerline), each block colour with its text colour")
+    out += ["%s = %s" % (k, v[k]) for k in ("block", "blockfg", "block2", "block2fg", "dark", "darkfg")]
+    out += ["%s = %s" % (k, v[k]) for i in range(1, BAR_SEGMENTS + 1) for k in ("seg%d" % i, "segfg%d" % i)]
+    return "\n".join(out) + "\n"
 
 
 def _dunst_colors(c):
@@ -1049,32 +1066,544 @@ def apply_tiling(settings):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)      # exits at once if it already runs
 
 
+# ------------------------------------------------------------------ touchpad gestures (Touchégg)
+# Three fingers left / right go to the next / previous workspace. Touchégg reads the touchpad in a system service
+# (touchegg.service); its client in your session runs the commands from ~/.config/touchegg/touchegg.conf.
+GESTURES_DEFAULT = {"enabled": True, "natural": True}     # natural: swipe left = next workspace, like a Mac
+TOUCHEGG_CONF = os.path.join(_CFG_HOME, "touchegg", "touchegg.conf")
+GESTURES_SCRIPT = os.path.join(CONFIG_DIR, "scripts", "Gestures.sh")
+WORKSPACE_SCRIPT = os.path.join(CONFIG_DIR, "scripts", "Workspace.py")
+TOUCHEGG_HINT = ("Swipe gestures need Touchégg:  Arch/CachyOS: sudo pacman -S touchegg   |   Fedora: sudo dnf install "
+                 "touchegg   |   Debian/Ubuntu: sudo apt install touchegg   - then: sudo systemctl enable --now touchegg")
+
+
+def gesture_choice(settings):
+    g = settings.get("gestures") if isinstance(settings.get("gestures"), dict) else {}
+    return {k: g[k] if isinstance(g.get(k), bool) else v for k, v in GESTURES_DEFAULT.items()}
+
+
+def touchegg_conf(settings):
+    """The Touchégg config for the saved choice (no gestures at all when they are switched off)."""
+    from xml.sax.saxutils import escape
+    g = gesture_choice(settings)
+    # an absolute path: Touchégg does not promise a shell that would expand "~" (shlex.quote is a no-op for a plain path)
+    script = escape(shlex.quote(WORKSPACE_SCRIPT))
+    nxt, prv = ("LEFT", "RIGHT") if g["natural"] else ("RIGHT", "LEFT")
+
+    def swipe(direction, what):
+        return ('    <gesture type="SWIPE" fingers="3" direction="%s">\n'
+                '      <action type="RUN_COMMAND">\n'
+                '        <repeat>false</repeat>\n'
+                '        <command>%s %s</command>\n'
+                '        <on>begin</on>\n'
+                '      </action>\n'
+                '    </gesture>\n' % (direction, script, what))
+    gestures = (swipe(nxt, "next") + swipe(prv, "prev")) if g["enabled"] else ""
+    return ('<!-- Touchpad gestures for i3 (Settings > Mouse & touchpad > Touchpad gestures). Written by the settings\n'
+            '     window: three fingers %s = next workspace, %s = previous. Edits here are replaced on Apply. -->\n'
+            '<touchégg>\n'
+            '  <settings>\n'
+            '    <property name="animation_delay">150</property>\n'
+            '    <property name="action_execute_threshold">20</property>\n'
+            '    <property name="color">auto</property>\n'
+            '    <property name="borderColor">auto</property>\n'
+            '  </settings>\n'
+            '  <application name="All">\n'
+            '%s'
+            '  </application>\n'
+            '</touchégg>\n' % (nxt.lower(), prv.lower(), gestures))
+
+
+def touchegg_state():
+    """'missing' (not installed), 'stopped' (its service is not running) or 'ok'."""
+    if not shutil.which("touchegg"):
+        return "missing"
+    if shutil.which("systemctl") and query(["systemctl", "is-active", "touchegg"]).strip() not in ("active", "activating"):
+        return "stopped"
+    return "ok"
+
+
+def apply_gestures(settings):
+    """Write the gesture config, then (re)start the Touchégg client so it takes effect."""
+    path = os.path.realpath(TOUCHEGG_CONF)
+    changed = _write_generated(path, touchegg_conf(settings))
+    if DRY or FILES_ONLY or not os.path.exists(GESTURES_SCRIPT):
+        return
+    subprocess.Popen([GESTURES_SCRIPT] + (["restart"] if changed else []), start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 # ------------------------------------------------------------------ top bar (polybar)
-BAR_DEFAULT = {"position": "top", "monitors": None, "size": "large", "style": "blocks", "divider": "rounded",
-               "title": False, "media": False}
+BAR_DEFAULT = {"position": "top", "monitors": None, "size": "large", "style": "solid", "divider": "rounded",
+               "title": False, "media": False, "spacing": 12}
+BAR_SPACING_MAX = 40          # px between two blocks (even numbers: half of it goes on each side of a block)
 # monitors None = every monitor
-BAR_STYLES = [("blocks", "Blocks - every item highlighted, dark to bright"), ("flat", "Flat - plain text (the classic look)")]
+BAR_STYLES = [("solid", "One colour - every item in its own block"),
+              ("gradient", "Gradient - blocks from dark to your colour"),
+              ("alternate", "Alternating - blocks in two shades"),
+              ("dark", "Dark - dark blocks, text in your colour"),
+              ("pill", "Pill - every item in one long block"),
+              ("powerline", "Powerline - blocks joined in a chain"),
+              ("underline", "Underline - text over a line in your colour"),
+              ("flat", "Flat - plain text (the classic look)")]
+BAR_SHAPED = ("solid", "gradient", "alternate", "dark", "pill", "powerline")     # the styles "Block shape" applies to
+BAR_STYLE_ALIASES = {"blocks": "solid"}          # older settings: the first block style
 BAR_DIVIDERS = [("rounded", "Rounded"), ("arrows", "Arrows"), ("slanted", "Slanted"), ("square", "Square")]
-# name -> (bar height px, font size pt). Font sizes are chosen so the text is a whole number of pixels
-# tall at 96 dpi (10.5pt = 14px, 13.5pt = 18px, 16.5pt = 22px): whole-pixel text is the sharpest.
-BAR_SIZES = {"normal": (30, "10.5"), "large": (38, "13.5"), "xlarge": (44, "16.5")}
-BAR_SIZE_LABELS = [("normal", "Normal"), ("large", "Large (sharper text)"), ("xlarge", "Extra large")]
+# the Nerd Font powerline glyphs drawn at the left / right end of a block
+BAR_CAPS = {"rounded": ("", ""), "arrows": ("", ""), "slanted": ("", ""),
+            "square": ("", "")}
+# Each size, measured on polybar 3.7 so that everything lands on whole pixels:
+#   height  the bar in px (plus its 1 px line)
+#   text    (size in px, vertical offset that centres it); icon: the same for the bigger icons (mug, power)
+#   cap     (height in px the block-end glyph is drawn at, its offset): half a pixel to a pixel taller than the bar,
+#           so its flat side covers the block's edge completely (no seam) and the curve is barely trimmed
+# Whole-pixel text matters with this font: at 16 px its capitals are exactly 10 px tall and the letters come out
+# clearly sharper than at 17 px. (Polybar turns "pixelsize=13" into 16.6 px, which is why Normal looked soft.)
+BAR_SIZES = {"normal": {"height": 30, "text": (16, 3), "icon": (20, 3), "cap": (31.5, 5)},
+             "large": {"height": 38, "text": (18, 3), "icon": (22, 4), "cap": (38.5, 5)},
+             "xlarge": {"height": 44, "text": (22, 4), "icon": (26, 4), "cap": (45, 7)}}
+BAR_SIZE_LABELS = [("normal", "Normal - 30 px tall, 16 px text"), ("large", "Large - 38 px tall, 18 px text (default)"),
+                   ("xlarge", "Extra large - 44 px tall, 22 px text")]
+BAR_FONT_FAMILY = "FantasqueSansM Nerd Font Mono"
+GLYPH_EM = 2048               # the font's units per em; a block-end glyph is 2168 units tall and 1060 wide (advance)
+CAP_GLYPH_H, CAP_GLYPH_W = 2168, 1060
+# the items on the right of the bar, left to right ("playerctl" - what is playing - goes first when switched on)
+BAR_ITEMS = ("network", "bluetooth", "pulseaudio", "backlight", "caffeine", "nightlight", "battery", "cpu", "memory",
+             "gpu", "date", "powermenu")
+POLYBAR_STYLE = os.path.join(_CFG_HOME, "polybar", "style.ini")
+SYSFS = os.environ.get("I3DOTS_SYSFS") or "/sys"          # (the tests point this at a pretend /sys)
+
+
+def bar_choice(settings):
+    """The saved bar settings, each one checked: anything unknown or damaged gives the default."""
+    bar = settings.get("bar") if isinstance(settings.get("bar"), dict) else {}
+
+    def pick(key, allowed):
+        v = bar.get(key)
+        v = BAR_STYLE_ALIASES.get(v, v) if isinstance(v, str) else None
+        return v if v in allowed else BAR_DEFAULT[key]
+    mons = bar.get("monitors")
+    return {"bottom": bar.get("position") == "bottom", "size": pick("size", BAR_SIZES),
+            "style": pick("style", dict(BAR_STYLES)), "divider": pick("divider", dict(BAR_DIVIDERS)),
+            "title": bar.get("title") is True, "media": bar.get("media") is True,
+            "spacing": clean_spacing(bar.get("spacing")),
+            "monitors": [m for m in mons if isinstance(m, str)] if isinstance(mons, list) else []}
+
+
+def clean_spacing(value):
+    """The space between blocks: a whole, even number of px from 0 to BAR_SPACING_MAX, else the default."""
+    v = _num(value, 0, BAR_SPACING_MAX)
+    return BAR_DEFAULT["spacing"] if v is None else v - v % 2
+
+
+def bar_font_spec(px, offset):
+    """A polybar font line drawing the bar font at exactly `px` pixels. Polybar turns a point size into pixels at
+    its dpi (fixed to 96 in config.ini), so px * 0.75 points is exact; "pixelsize=" would be rescaled and blur."""
+    pt = ("%.3f" % (px * 0.75)).rstrip("0").rstrip(".")
+    return "%s:size=%s;%d" % (BAR_FONT_FAMILY, pt, offset)
+
+
+def bar_fonts(size):
+    """(text, icon, block-end) polybar font lines for a bar size."""
+    s = BAR_SIZES[size]
+    cap_h, cap_off = s["cap"]
+    return bar_font_spec(*s["text"]), bar_font_spec(*s["icon"]), bar_font_spec(cap_h * GLYPH_EM / CAP_GLYPH_H, cap_off)
+
+
+def _sysfs(pattern):
+    return sorted(glob.glob(os.path.join(SYSFS, pattern)))
+
+
+def _read_text(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def bar_power_supply():
+    """(battery, charger) names in /sys/class/power_supply for the bar's battery item; battery None = no battery.
+    Laptops name them differently (BAT0 / BAT1 / CMB0, AC / ADP1 / ACAD) and a wrong name stops the item."""
+    battery = charger = None
+    for d in _sysfs("class/power_supply/*"):
+        kind = _read_text(os.path.join(d, "type"))
+        if kind == "Battery" and battery is None and _read_text(os.path.join(d, "scope")) != "Device":
+            battery = os.path.basename(d)                       # (a wireless mouse's battery has scope "Device")
+        elif kind == "Mains" and charger is None:
+            charger = os.path.basename(d)
+    return battery, charger
+
+
+def bar_items(choice):
+    """The items on the right of the bar, left to right. An item this computer has no hardware for (battery on a
+    desktop, Wi-Fi, Bluetooth, screen brightness, a GPU sensor) is left out instead of leaving an empty block."""
+    have = {"network": bool(_sysfs("class/net/*/wireless") or _sysfs("class/net/*/phy80211")),
+            "bluetooth": bool(_sysfs("class/bluetooth/hci*")) and bool(shutil.which("bluetoothctl")),
+            "backlight": bool(_sysfs("class/backlight/*")) and bool(shutil.which("brightnessctl")),
+            "battery": bar_power_supply()[0] is not None,
+            "gpu": bool(shutil.which("nvidia-smi") or _sysfs("class/drm/card*/device/gpu_busy_percent")
+                        or _sysfs("class/drm/card*/gt_cur_freq_mhz"))}
+    return (["playerctl"] if choice["media"] else []) + [m for m in BAR_ITEMS if have.get(m, True)]
+
+
+def mix(c1, c2, t):
+    """c1 blended into c2: t=1 gives c1, t=0 gives c2."""
+    return "#%02x%02x%02x" % tuple(round(int(c1[i:i + 2], 16) * t + int(c2[i:i + 2], 16) * (1 - t)) for i in (1, 3, 5))
+
+
+def bar_colors(accent):
+    """Every colour of the bar for one accent colour (polybar/colors.ini holds the same values)."""
+    a = norm_accent(accent) or ACCENT_DEFAULT
+    second, dark = shade(a, 0.6), mix(a, "#141414", 0.16)
+    c = {"background": "#f2000000", "background-alt": "#1c1c1c", "foreground": "#e6e6e6", "primary": a,
+         "secondary": shade(a, 0.75), "alert": a, "disabled": "#6e6e6e", "line": "#303030",
+         "block": a, "blockfg": readable_on(a),                      # one colour
+         "block2": second, "block2fg": readable_on(second),          # alternating: the second shade
+         "dark": dark, "darkfg": a}                                  # dark blocks, text in the colour
+    for i, (bg, fg) in enumerate(bar_segments(a), 1):                # gradient / powerline: dark -> the colour
+        c["seg%d" % i], c["segfg%d" % i] = bg, fg
+    return c
+
+
+def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spacing"]):
+    """How each item on the right of the bar looks in a style: block colour (bg), text colour (fg), underline (ul),
+    the glyphs at its left / right end (l, r) with their colours, and the space on each side of it (gap, px).
+    `spacing` is the room between two blocks (each block gets half of it on either side); joined-up styles have none.
+    An end glyph " " is a gap the width of a block end, used between the items of a joined-up style.
+    `col(name)` turns a colours.ini name into a value: a reference for polybar, #rrggbb for the preview.
+    Returns ({item: {...}}, {bar-wide values: underline size, the flat bar's item spacing, focused workspace})."""
+    left, right = BAR_CAPS[divider] if style in BAR_SHAPED else ("", "")
+    bar_bg = col("background")
+    rows = {}
+    half = clean_spacing(spacing) // 2
+
+    def block(m, bg, fg, lcap=left, lbg=bar_bg, rcap=right, gap=half, ul=None):
+        rows[m] = {"bg": bg, "fg": fg, "ul": ul or bg, "l": lcap, "lfg": bg, "lbg": lbg,
+                   "r": rcap, "rfg": bg, "rbg": bar_bg, "gap": gap}
+
+    def shade_of(i, n):                         # position i of n -> one of the 13 colours from dark to the colour
+        k = 1 + (round(12 * i / (n - 1)) if n > 1 else 12)
+        return col("seg%d" % k), col("segfg%d" % k)
+
+    if style in ("pill", "powerline"):
+        # what is playing comes and goes, so it keeps a block of its own instead of breaking the chain
+        if "playerctl" in items:
+            block("playerctl", col("block"), col("blockfg"))
+        chain = [m for m in items if m != "playerctl"]
+        prev = bar_bg
+        for i, m in enumerate(chain):
+            last = i == len(chain) - 1
+            if style == "pill":                 # one block: the ends on the outside, a little room between items
+                bg = col("block")
+                block(m, bg, col("blockfg"), lcap=left if i == 0 else " ", lbg=bar_bg if i == 0 else bg,
+                      rcap=right if last else "", gap=0)
+            else:                               # each block's left end cuts into the block before it
+                bg, fg = shade_of(i, len(chain))
+                if left or i == 0:
+                    block(m, bg, fg, lbg=prev, rcap=right if last else "", gap=0)
+                else:                           # square: the blocks just meet, with a little room in each
+                    block(m, bg, fg, lcap=" ", lbg=bg, rcap="", gap=0)
+                prev = bg
+    else:
+        for i, m in enumerate(items):
+            if style == "gradient":
+                block(m, *shade_of(i, len(items)))
+            elif style == "alternate":
+                block(m, *((col("block"), col("blockfg")) if i % 2 == 0 else (col("block2"), col("block2fg"))))
+            elif style == "dark":
+                block(m, col("dark"), col("darkfg"))
+            elif style == "underline":
+                block(m, bar_bg, col("foreground"), ul=col("primary"))
+            else:
+                block(m, col("block"), col("blockfg"))
+    for m in ("playerctl",) + BAR_ITEMS:        # items that are not shown still need values
+        if m not in rows:
+            block(m, col("block"), col("blockfg"))
+    bar = {"line": 0, "gap": half, "ws-bg": col("primary"), "ws-fg": col("background"), "ws-ul": col("primary")}
+    if style == "underline":
+        bar.update({"line": 2 if height < 34 else 3, "ws-bg": col("background-alt"), "ws-fg": col("foreground")})
+    elif style == "dark":
+        bar.update({"ws-bg": col("dark"), "ws-fg": col("darkfg")})
+    return rows, bar
+
+
+def saved_accent(settings):
+    cfg = settings.get("colors")
+    a = norm_accent(cfg.get("accent")) if isinstance(cfg, dict) else None
+    return a if a and brightness(a) >= ACCENT_MIN_BRIGHT else ACCENT_DEFAULT
+
+
+def _colors_ini_names():
+    """The colour names polybar/colors.ini defines (an older or hand-edited file may lack the newer ones)."""
+    names, section = set(), None
+    try:
+        with open(POLYBAR_COLORS) as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith("["):
+                    section = s.strip("[]").strip()
+                elif section == "colors" and "=" in s and not s.startswith((";", "#")):
+                    names.add(s.split("=", 1)[0].strip())
+    except (OSError, UnicodeDecodeError):
+        pass
+    return names
+
+
+def bar_style_ini(settings):
+    """polybar/style.ini for the saved style: every item's colours and end glyphs. Colours are references into
+    colors.ini (so a hand edit there still counts); a name colors.ini lacks is written as a plain value."""
+    choice = bar_choice(settings)
+    names, values = _colors_ini_names(), bar_colors(saved_accent(settings))
+
+    def col(name):
+        return "${colors.%s}" % name if name in names else values[name]
+    rows, bar = bar_style_rows(choice["style"], choice["divider"], bar_items(choice),
+                               BAR_SIZES[choice["size"]]["height"], col, choice["spacing"])
+
+    def value(k, v):
+        if k == "gap":
+            return "%dpx" % v                       # spacing in pixels (a bare number would mean spaces)
+        return '" "' if v == " " else v              # (a value that is a space is quoted, or polybar would drop it)
+    out = ["; How the bar's blocks look (Settings > Appearance > Bar style). Written by the settings window each time",
+           "; the bar starts, so edits here are replaced: change colours in colors.ini, or blocks.ini for the layout.",
+           "[barstyle]"]
+    out += [("%s = %s" % (k, value(k, v))).rstrip() for k, v in bar.items()]
+    for m in ("playerctl",) + BAR_ITEMS:
+        out += [("%s-%s = %s" % (m, k, value(k, v))).rstrip() for k, v in rows[m].items()]
+    return "\n".join(out) + "\n"
+
+
+def write_bar_style(settings):
+    if os.path.isdir(os.path.dirname(POLYBAR_STYLE)):
+        _write_generated(POLYBAR_STYLE, bar_style_ini(settings))
 
 
 def bar_env(settings):
     """Shell assignments for polybar/launch.sh."""
-    bar = settings.get("bar") or {}
-    mons = bar.get("monitors")
-    size = bar.get("size") if bar.get("size") in BAR_SIZES else BAR_DEFAULT["size"]
-    height, font = BAR_SIZES[size]
-    style = bar.get("style") if bar.get("style") in dict(BAR_STYLES) else BAR_DEFAULT["style"]
-    divider = bar.get("divider") if bar.get("divider") in dict(BAR_DIVIDERS) else BAR_DEFAULT["divider"]
-    lines = ["BAR_BOTTOM=%s" % ("true" if bar.get("position") == "bottom" else "false"),
-             "BAR_HEIGHT=%d" % height, "BAR_FONT=%s" % font, "BAR_STYLE=%s" % style, "BAR_DIVIDER=%s" % divider,
-             "BAR_SHOW_TITLE=%s" % ("true" if bar.get("title") is True else "false"),
-             "BAR_SHOW_MEDIA=%s" % ("true" if bar.get("media") is True else "false"),
-             "BAR_MONITORS=%s" % shlex.quote(" ".join(mons) if mons else "")]
-    return "\n".join(lines)
+    choice = bar_choice(settings)
+    text, icon, cap = bar_fonts(choice["size"])
+    items = bar_items(choice)
+    battery, charger = bar_power_supply()
+    env = {"BAR_BOTTOM": "true" if choice["bottom"] else "false", "BAR_HEIGHT": BAR_SIZES[choice["size"]]["height"],
+           "BAR_FONT_SPEC": text, "BAR_ICON_SPEC": icon, "BAR_CAP_SPEC": cap,
+           "BAR_STYLE": choice["style"], "BAR_DIVIDER": choice["divider"],
+           "BAR_NAME": "main" if choice["style"] == "flat" else "blocks",
+           "BAR_LEFT": "i3 xwindow" if choice["title"] else "i3",
+           "BAR_RIGHT": " ".join(items), "BAR_RIGHT_B": " ".join("b-" + m for m in items),
+           "BAR_BATTERY": battery or "BAT0", "BAR_ADAPTER": charger or "AC",
+           "BAR_MONITORS": " ".join(choice["monitors"])}
+    return "\n".join("%s=%s" % (k, shlex.quote(str(v))) for k, v in env.items())
+
+
+# ------------------------------------------------------------------ bar pictures (settings window)
+# sample text for each item: (with the bar's icon font, without it)
+PREVIEW_TEXT = {"playerctl": ("󰎈 Song - Artist", "Song - Artist"), "network": ("󰤨 Home 82%", "Wi-Fi 82%"),
+                "bluetooth": ("󰂯", "BT"), "pulseaudio": ("󰕾 60%", "Vol 60%"), "backlight": ("󰃟 75%", "Light 75%"),
+                "caffeine": ("󰛊", "Awake"), "nightlight": ("󰖙", "Night"), "battery": ("󰁹 87%", "Bat 87%"),
+                "cpu": ("󰻠 12%", "CPU 12%"), "memory": ("󰍛 34%", "RAM 34%"), "gpu": ("󰢮 GPU 5%", "GPU 5%"),
+                "date": (None, None), "powermenu": ("󰐥", "Power")}
+# the small pictures in the dropdowns: a few items with short text
+THUMB_TEXT = {"network": ("󰤨", "Wi-Fi"), "pulseaudio": ("󰕾 60", "60%"), "date": ("12:30", "12:30")}
+THUMB_SIZE = (232, 26)
+THUMB_FONT = {"height": 26, "text": (13, 0), "icon": (13, 0), "cap": (27, 0)}     # (offsets unused in pictures)
+THUMB_SPACING = 6
+_font_ok = {}
+
+
+def _rgba(value):
+    """'#rrggbb' or polybar's '#aarrggbb' -> (r, g, b, a) from 0 to 1."""
+    v = value.lstrip("#")
+    a = int(v[:2], 16) / 255 if len(v) == 8 else 1.0
+    v = v[2:] if len(v) == 8 else v
+    return tuple(int(v[i:i + 2], 16) / 255 for i in (0, 2, 4)) + (a,)
+
+
+def paint_bar(cr, width, style, divider, accent, size="large", items=None, title=False, bottom=False, thumb=False,
+              spacing=BAR_DEFAULT["spacing"]):
+    """Draw the bar as polybar will show it in a style (same colours, block ends and spacing: see bar_style_rows),
+    on the cairo context `cr`, `width` pixels wide. thumb=True draws the small dropdown picture instead: a few
+    items, no workspaces. Shrinks the drawing to fit when the bar would be wider than `width`."""
+    from gi.repository import Pango, PangoCairo
+    if "ok" not in _font_ok:
+        names = {f.get_name() for f in PangoCairo.FontMap.get_default().list_families()}
+        _font_ok["ok"] = BAR_FONT_FAMILY in names
+    nerd = _font_ok["ok"]
+    family = BAR_FONT_FAMILY if nerd else "monospace"
+    pal = bar_colors(accent)
+    if thumb:
+        dims, spacing = THUMB_FONT, THUMB_SPACING
+        items = list(THUMB_TEXT)
+        texts = {m: THUMB_TEXT[m][0 if nerd else 1] for m in items}
+    else:
+        dims = BAR_SIZES[size if size in BAR_SIZES else "large"]
+        items = list(items if items is not None else BAR_ITEMS)
+        texts = {m: PREVIEW_TEXT[m][0 if nerd else 1] for m in items}
+        if "date" in texts:
+            import time
+            texts["date"] = time.strftime("%a %d %b  %H:%M")
+    h, font_px, icon_px = dims["height"], dims["text"][0], dims["icon"][0]
+    rows, extra = bar_style_rows(style, divider, items, h, lambda n: pal[n], spacing)
+    layout = PangoCairo.create_layout(cr)
+
+    def measure(text, px):
+        fd = Pango.FontDescription.from_string(family)
+        fd.set_absolute_size(px * Pango.SCALE)
+        layout.set_font_description(fd)
+        layout.set_text(text, -1)
+        return layout.get_pixel_size()
+    space = measure(" ", font_px)[0]
+    # the end glyphs as polybar draws them (BAR_SIZES "cap"): a little taller than the bar, as wide as the glyph's
+    # advance at that size, rounded up like polybar does
+    cap_h = dims["cap"][0]
+    cap_w, cap_ry = math.ceil(cap_h * CAP_GLYPH_W / CAP_GLYPH_H), cap_h / 2
+
+    # lay out the right-hand items: [(kind, x, w, ...)]
+    parts, x = [], 0
+    for m in items:
+        txt = texts[m]
+        px = icon_px if m in ("caffeine", "powermenu") and nerd and not thumb else font_px
+        if style == "flat":
+            if m in ("cpu", "memory") and nerd:                   # the flat bar spells these out
+                txt = txt.replace(" ", " CPU " if m == "cpu" else " RAM ", 1)
+            fg = pal["primary"] if m == "date" else pal["secondary"] if m in ("caffeine", "nightlight", "playerctl") \
+                else pal["foreground"]
+            x += extra["gap"]
+            tw = measure(txt, px)[0]
+            parts.append(("text", x, tw, txt, px, fg, None))
+            x += tw + extra["gap"]
+            continue
+        r = rows[m]
+        x += r["gap"]
+        start = x
+        if r["l"]:
+            parts.append(("cap", x, cap_w, r["l"], r["lfg"], r["lbg"]))
+            x += cap_w
+        inner = measure(txt, px)[0]                              # (the spaces around it are in the text font)
+        tw = inner + 2 * space
+        joined = r["gap"] == 0                                   # touches the items next to it
+        parts.append(("box", x, tw, r["bg"], bool(r["l"]) or joined, bool(r["r"]) or joined))
+        parts.append(("text", x + space, inner, txt, px, r["fg"], None))
+        x += tw
+        if r["r"]:
+            parts.append(("cap", x, cap_w, r["r"], r["rfg"], r["rbg"]))
+            x += cap_w
+        if extra["line"]:
+            parts.append(("line", start, x - start, r["ul"]))
+        x += r["gap"]
+    right_w = x + (0 if thumb else 2 * space)                     # the bar's right padding
+
+    # the left-hand side: workspaces (and the window title)
+    left, lx = [], 0
+    if not thumb:
+        for i, name in enumerate(("I", "II", "III")):
+            tw = measure("  %s  " % name, font_px)[0]
+            if i == 0:
+                left.append(("box", lx, tw, extra["ws-bg"], False, False))
+                left.append(("text", lx, tw, "  %s  " % name, font_px, extra["ws-fg"], None))
+                if extra["line"]:
+                    left.append(("line", lx, tw, extra["ws-ul"]))
+            else:
+                left.append(("text", lx, tw, "  %s  " % name, font_px, pal["disabled"], None))
+            lx += tw
+        if title:
+            tw = measure("  Terminal - zsh  ", font_px)[0]
+            left.append(("text", lx + space, tw, "  Terminal - zsh  ", font_px, pal["disabled"], None))
+            lx += tw + space
+
+    need = lx + right_w + (0 if thumb else 4 * space)
+    scale = min(1.0, width / need) if need else 1.0
+    full_h = h if thumb else h + 1                                 # + the bar's 1 px border line
+    cr.save()
+    cr.scale(scale, scale)
+    w = width / scale
+    y0 = (full_h / scale - full_h) / 2                             # keep a shrunk bar centred
+    cr.translate(0, y0)
+    if thumb:
+        cr.set_source_rgba(0, 0, 0, 1)
+        cr.rectangle(0, 0, w, h)
+        cr.fill()
+    else:
+        cr.set_source_rgba(*_rgba(pal["background"]))
+        cr.rectangle(0, 0, w, full_h)
+        cr.fill()
+        cr.set_source_rgba(*_rgba(pal["line"]))
+        cr.rectangle(0, 0 if bottom else h, w, 1)
+        cr.fill()
+    top = 1 if (bottom and not thumb) else 0
+    off = 6 if thumb else w - right_w                              # thumbnails start at the left
+
+    def draw(parts, dx):
+        # what is behind the end glyphs first, then the blocks (reaching 2 px under whatever they touch, so
+        # no hairline shows where they meet when the picture is shrunk), then the glyphs and text on top
+        for p in parts:
+            if p[0] == "cap":
+                cr.set_source_rgba(*_rgba(p[5]))
+                cr.rectangle(p[1] + dx, top, p[2], h)
+                cr.fill()
+        for p in parts:
+            if p[0] == "box":
+                cr.set_source_rgba(*_rgba(p[3]))
+                cr.rectangle(p[1] + dx - (2 if p[4] else 0), top, p[2] + (2 if p[4] else 0) + (2 if p[5] else 0), h)
+                cr.fill()
+        for p in parts:
+            kind, px0 = p[0], p[1] + dx
+            if kind == "box":
+                continue
+            elif kind == "line":
+                cr.set_source_rgba(*_rgba(p[3]))
+                cr.rectangle(px0, top + h - extra["line"], p[2], extra["line"])
+                cr.fill()
+            elif kind == "text":
+                tw, th = measure(p[3], p[4])
+                cr.set_source_rgba(*_rgba(p[5]))
+                cr.move_to(px0, top + (h - th) / 2)
+                PangoCairo.show_layout(cr, layout)
+            elif kind == "cap":
+                cw, glyph = p[2], p[3]
+                if glyph not in ("", "", "", "", "", ""):
+                    continue                                       # " ": just room, in the colour behind it
+                cr.save()
+                cr.rectangle(px0 - 1, top, cw + 2, h)              # the glyph is cut off at the bar's edges
+                cr.clip()
+                cr.set_source_rgba(*_rgba(p[4]))
+                # (the glyph overlaps its block by a hair, so no seam shows between them)
+                ym = top + h / 2
+                y1, y2 = ym - cap_ry, ym + cap_ry
+                if glyph == "":                              # rounded, left end
+                    cr.rectangle(px0 + cw - 0.5, top, 1, h)
+                    cr.fill()
+                    cr.translate(px0 + cw, ym)
+                    cr.scale(cw, cap_ry)
+                    cr.arc(0, 0, 1, 0.5 * math.pi, 1.5 * math.pi)
+                elif glyph == "":                            # rounded, right end
+                    cr.rectangle(px0 - 0.5, top, 1, h)
+                    cr.fill()
+                    cr.translate(px0, ym)
+                    cr.scale(cw, cap_ry)
+                    cr.arc(0, 0, 1, -0.5 * math.pi, 0.5 * math.pi)
+                elif glyph == "":                            # arrow pointing left
+                    cr.move_to(px0 + cw + 0.5, y1)
+                    cr.line_to(px0 + cw + 0.5, y2)
+                    cr.line_to(px0, ym)
+                elif glyph == "":                            # arrow pointing right
+                    cr.move_to(px0 - 0.5, y1)
+                    cr.line_to(px0 - 0.5, y2)
+                    cr.line_to(px0 + cw, ym)
+                elif glyph == "":                            # slanted, left end
+                    cr.move_to(px0 + cw + 0.5, y1)
+                    cr.line_to(px0 + cw + 0.5, y2)
+                    cr.line_to(px0, y2)
+                else:                                              # slanted, right end
+                    cr.move_to(px0 - 0.5, y1)
+                    cr.line_to(px0 + cw, y1)
+                    cr.line_to(px0 - 0.5, y2)
+                cr.close_path()
+                cr.fill()
+                cr.restore()
+    draw(left, 0)
+    draw(parts, off)
+    cr.restore()
 
 
 def apply_bar(settings):
@@ -1362,6 +1891,23 @@ def bt_pair(mac):
 NM_HINT = ("Wi-Fi is managed by NetworkManager, which was not found.\n"
            "Fedora: sudo dnf install NetworkManager-wifi   |   Arch: sudo pacman -S networkmanager   |   Debian/Ubuntu: sudo apt install network-manager\n"
            "then: sudo systemctl enable --now NetworkManager")
+
+
+NET_APPLET = os.path.join(CONFIG_DIR, "scripts", "NetApplet.sh")
+
+
+def wifi_tray_icon(settings):
+    """Show nm-applet's icon in the tray? Off by default: the Wi-Fi item in the bar opens the Wi-Fi tab instead."""
+    n = settings.get("network") if isinstance(settings.get("network"), dict) else {}
+    return n.get("tray_icon") is True
+
+
+def apply_net_applet(settings, restart=False):
+    """Hide or show nm-applet's tray icon (NetApplet.sh does it and keeps the applet running for password prompts)."""
+    if DRY or FILES_ONLY or not os.path.exists(NET_APPLET):
+        return
+    subprocess.Popen([NET_APPLET] + (["restart"] if restart else []), start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def nm_ctl(args, timeout=30):
@@ -1699,9 +2245,31 @@ def apply_apps(settings):
     return changed
 
 
+def refresh_files(settings):
+    """After a reinstall: write the saved settings into the freshly copied config files, without touching the
+    running session (the installer may run from another desktop). The rest is applied at the next login."""
+    global FILES_ONLY
+    FILES_ONLY = True
+    failed = []
+    for step in (apply_cursor, apply_opacity, apply_themes, apply_terminal_font, apply_colors, apply_gaps, apply_apps,
+                 apply_gestures):
+        try:
+            step(settings)
+        except Exception as e:  # noqa: BLE001 - one bad setting must not stop the others
+            failed.append(step.__name__)
+            print("i3 settings: %s failed: %s" % (step.__name__, e), file=sys.stderr)
+    try:
+        apply_keybinds(settings, reload=False)
+    except Exception as e:  # noqa: BLE001
+        failed.append("apply_keybinds")
+        print("i3 settings: apply_keybinds failed: %s" % e, file=sys.stderr)
+    return 1 if failed else 0
+
+
 def apply_all(settings):
     """Apply every saved setting. One failing step is reported but never stops the others."""
-    for step in (apply_mouse, apply_cursor, apply_monitors, apply_opacity, apply_themes, apply_terminal_font, apply_colors, apply_gaps, apply_apps, apply_sound):
+    for step in (apply_mouse, apply_cursor, apply_monitors, apply_opacity, apply_themes, apply_terminal_font, apply_colors,
+                 apply_gaps, apply_apps, apply_sound, apply_gestures):
         try:
             step(settings)
         except Exception as e:  # noqa: BLE001 - login must not break on a bad setting
@@ -1801,12 +2369,25 @@ def launch_gui(confirm=True, tab=None):
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
     from gi.repository import Gdk, GLib, Gtk
+    # pictures of the bar need cairo for Python (python3-cairo / python-cairo / python3-gi-cairo); without it the
+    # window works the same, just without the pictures
+    try:
+        gi.require_version("Pango", "1.0")
+        gi.require_version("PangoCairo", "1.0")
+        from gi.repository import PangoCairo
+        import cairo
+        gi.require_foreign("cairo")
+        have_cairo = PangoCairo is not None
+    except (ImportError, ValueError, AttributeError):
+        cairo, have_cairo = None, False
 
     GLib.set_prgname("i3dots-settings")
     Gdk.set_program_class("i3dots-settings")
 
     provider = Gtk.CssProvider()
     settings = load_settings()
+    live_accent = {"v": saved_accent(settings)}       # the colour picked in the Colors tab, before Apply too
+    accent_listeners = []                             # called when it changes (the bar pictures follow it)
     provider.load_from_data(css_for((settings.get('colors') or {}).get('accent')))
     Gtk.StyleContext.add_provider_for_screen(
         Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -1918,6 +2499,34 @@ def launch_gui(confirm=True, tab=None):
     if not devices:
         mp.pack_start(dim("No mouse or touchpad with libinput settings was found. "
                           "Settings will still be saved and applied the next time a device is detected."), False, False, 0)
+
+    # touchpad gestures section (same tab)
+    mp.pack_start(Gtk.Separator(), False, False, 6)
+    gt = Gtk.Label(label="Touchpad gestures", xalign=0)
+    gt.get_style_context().add_class("title")
+    mp.pack_start(gt, False, False, 0)
+    gest_saved = gesture_choice(settings)
+    gest_on = Gtk.Switch()
+    gest_on.set_halign(Gtk.Align.START)
+    gest_on.set_active(gest_saved["enabled"])
+    mp.pack_start(row("Three-finger swipe", gest_on), False, False, 0)
+    gest_dir = Gtk.ComboBoxText()
+    gest_dir.append("natural", "Swipe left goes to the next workspace (like a Mac)")
+    gest_dir.append("reverse", "Swipe right goes to the next workspace")
+    gest_dir.set_active_id("natural" if gest_saved["natural"] else "reverse")
+    gest_dir_row = row("Direction", gest_dir)
+    mp.pack_start(gest_dir_row, False, False, 0)
+    gest_on.connect("notify::active", lambda *_: gest_dir_row.set_sensitive(gest_on.get_active()))
+    gest_dir_row.set_sensitive(gest_on.get_active())
+    gest_state = touchegg_state()
+    mp.pack_start(dim("Put three fingers on the touchpad and swipe to change workspace: 1 -> 2 -> 3 and back, the "
+                      "same as SUPER+1/2/3 (an empty workspace is opened too; it stops at 1 and 10). Changes when you "
+                      "press Apply."), False, False, 0)
+    if gest_state == "missing":
+        mp.pack_start(dim(TOUCHEGG_HINT), False, False, 0)
+    elif gest_state == "stopped":
+        mp.pack_start(dim("The Touchégg service is not running, so swipes do nothing yet. Start it once with:  "
+                          "sudo systemctl enable --now touchegg"), False, False, 0)
 
     # cursor theme section (same tab)
     sep = Gtk.Separator()
@@ -2325,17 +2934,44 @@ def launch_gui(confirm=True, tab=None):
         bar_size.append(key, label)
     bar_size.set_active_id(bar_saved.get("size") if bar_saved.get("size") in BAR_SIZES else BAR_DEFAULT["size"])
     ap.pack_start(row("Bar size", bar_size), False, False, 0)
-    bar_style = Gtk.ComboBoxText()
-    for key, label in BAR_STYLES:
-        bar_style.append(key, label)
-    bar_style.set_active_id(bar_saved.get("style") if bar_saved.get("style") in dict(BAR_STYLES) else BAR_DEFAULT["style"])
+    saved_choice = bar_choice(settings)
+
+    def picture_combo(options):
+        """A dropdown whose entries show a small picture of the bar next to their name."""
+        store = Gtk.ListStore(str, str, object)
+        for key, label in options:
+            store.append([key, label, None])
+        combo = Gtk.ComboBox.new_with_model(store)
+        combo.set_id_column(0)
+        if have_cairo:
+            pic = Gtk.CellRendererPixbuf()
+            pic.set_padding(4, 3)
+            combo.pack_start(pic, False)
+            combo.set_cell_data_func(pic, lambda _l, cell, model, it, *_: cell.set_property("surface", model[it][2]))
+        text = Gtk.CellRendererText()
+        combo.pack_start(text, True)
+        combo.add_attribute(text, "text", 1)
+        return combo, store
+    bar_style, bar_style_store = picture_combo(BAR_STYLES)
+    bar_style.set_active_id(saved_choice["style"])
     ap.pack_start(row("Bar style", bar_style), False, False, 0)
-    bar_div = Gtk.ComboBoxText()
-    for key, label in BAR_DIVIDERS:
-        bar_div.append(key, label)
-    bar_div.set_active_id(bar_saved.get("divider") if bar_saved.get("divider") in dict(BAR_DIVIDERS) else BAR_DEFAULT["divider"])
+    bar_div, bar_div_store = picture_combo(BAR_DIVIDERS)
+    bar_div.set_active_id(saved_choice["divider"])
     bar_div_row = row("Block shape", bar_div)
     ap.pack_start(bar_div_row, False, False, 0)
+    bar_space = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, BAR_SPACING_MAX, 2)
+    bar_space.set_digits(0)
+    bar_space.set_value_pos(Gtk.PositionType.RIGHT)
+    bar_space.set_value(saved_choice["spacing"])
+    bar_space.connect("format-value", lambda _s, v: "%d px" % clean_spacing(int(round(v))))
+
+    def snap_space(sc):
+        v = clean_spacing(int(round(sc.get_value())))       # whole, even pixels: half goes on each side of a block
+        if v != sc.get_value():
+            sc.set_value(v)
+    bar_space.connect("value-changed", snap_space)
+    bar_space_row = row("Space between blocks", bar_space)
+    ap.pack_start(bar_space_row, False, False, 0)
     bar_title = Gtk.Switch()
     bar_title.set_halign(Gtk.Align.START)
     bar_title.set_active(bar_saved.get("title") is True)
@@ -2344,12 +2980,63 @@ def launch_gui(confirm=True, tab=None):
     bar_media.set_halign(Gtk.Align.START)
     bar_media.set_active(bar_saved.get("media") is True)
     ap.pack_start(row("Show what is playing", bar_media), False, False, 0)
-    bar_style.connect("changed", lambda *_: bar_div_row.set_sensitive(bar_style.get_active_id() == "blocks"))
-    bar_div_row.set_sensitive(bar_style.get_active_id() == "blocks")
-    ap.pack_start(dim("Blocks: every item on the right of the bar (Wi-Fi, Bluetooth, volume, brightness, stay-awake, night "
-                      "light, battery, CPU, RAM, GPU, clock, power) sits in its own highlighted block, shading from dark to "
-                      "your accent colour (Colors tab). The shape sets how the ends of each block look. The window title "
-                      "and the song or video that is playing are hidden unless you switch them on above."),
+    # a picture of the bar as it will look, kept up to date with every choice above (and the Colors tab)
+    preview_items = bar_items({"media": False})          # the items this computer shows (no battery on a desktop...)
+    if have_cairo:
+        pvl = Gtk.Label(label="Preview", xalign=0)
+        pvl.get_style_context().add_class("dim")
+        ap.pack_start(pvl, False, False, 0)
+        bar_preview = Gtk.DrawingArea()
+        ap.pack_start(bar_preview, False, False, 0)
+
+        def draw_preview(area, cr):
+            size = bar_size.get_active_id() or BAR_DEFAULT["size"]
+            items = (["playerctl"] if bar_media.get_active() else []) + preview_items
+            paint_bar(cr, area.get_allocated_width(), bar_style.get_active_id() or BAR_DEFAULT["style"],
+                      bar_div.get_active_id() or BAR_DEFAULT["divider"], live_accent["v"], size, items,
+                      title=bar_title.get_active(), bottom=bar_pos.get_active_id() == "bottom",
+                      spacing=clean_spacing(int(round(bar_space.get_value()))))
+            return False
+        bar_preview.connect("draw", draw_preview)
+
+    def thumb(style, divider, scale):
+        w, h = THUMB_SIZE
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w * scale, h * scale)
+        surf.set_device_scale(scale, scale)
+        paint_bar(cairo.Context(surf), w, style, divider, live_accent["v"], thumb=True)
+        return surf
+
+    def refresh_bar_pictures(*_):
+        style = bar_style.get_active_id() or BAR_DEFAULT["style"]
+        bar_div_row.set_sensitive(style in BAR_SHAPED)
+        bar_space_row.set_sensitive(style not in ("pill", "powerline"))      # those join their blocks up
+        if not have_cairo:
+            return
+        try:
+            scale = max(1, bar_style.get_scale_factor())
+            divider = bar_div.get_active_id() or BAR_DEFAULT["divider"]
+            for r in bar_style_store:
+                r[2] = thumb(r[0], divider, scale)
+            for r in bar_div_store:                          # the shapes, shown in the chosen style (or one colour)
+                r[2] = thumb(style if style in BAR_SHAPED else "solid", r[0], scale)
+        except Exception as e:  # noqa: BLE001 - a picture that fails must never stop the window
+            print("i3 settings: bar pictures: %s" % e, file=sys.stderr)
+        bar_preview.set_size_request(-1, BAR_SIZES[bar_size.get_active_id() or BAR_DEFAULT["size"]]["height"] + 1)
+        bar_preview.queue_draw()
+    for w, sig in ((bar_style, "changed"), (bar_div, "changed"), (bar_size, "changed"), (bar_pos, "changed"),
+                   (bar_title, "notify::active"), (bar_media, "notify::active"), (bar_style, "notify::scale-factor")):
+        w.connect(sig, refresh_bar_pictures)
+    accent_listeners.append(refresh_bar_pictures)
+    if have_cairo:
+        bar_space.connect("value-changed", lambda *_: bar_preview.queue_draw())
+    refresh_bar_pictures()
+    ap.pack_start(dim("Every item on the right of the bar (Wi-Fi, Bluetooth, volume, brightness, stay-awake, night light, "
+                      "battery, CPU, RAM, GPU, clock, power) can sit in its own block in your accent colour (Colors tab), "
+                      "in a gradient, in two shades, in dark blocks, in one long pill or a powerline chain - or show as "
+                      "plain or underlined text. The shape sets how the ends of the blocks look, the space how far apart "
+                      "they are (Pill and Powerline join them up, so it does not apply there). Items your computer has "
+                      "no hardware for are left out. The window title and the song or video that is playing are hidden "
+                      "unless you switch them on above."),
                   False, False, 0)
     bar_all = Gtk.Switch()
     bar_all.set_halign(Gtk.Align.START)
@@ -3140,6 +3827,13 @@ def launch_gui(confirm=True, tab=None):
     wp.pack_start(wf_btns2, False, False, 0)
     wf_msg = dim("")
     wp.pack_start(wf_msg, False, False, 0)
+    wf_tray = Gtk.Switch()
+    wf_tray.set_halign(Gtk.Align.START)
+    wf_tray.set_active(wifi_tray_icon(settings))
+    wp.pack_start(row("Wi-Fi icon in the tray", wf_tray), False, False, 0)
+    wp.pack_start(dim("Off by default: the Wi-Fi item in the bar opens this tab. The network helper behind the icon "
+                      "(nm-applet) keeps running either way, so a saved network that needs its password can still ask "
+                      "for it. Changes when you press Apply."), False, False, 0)
     wp_page = scrolled(wp)
     nb.append_page(wp_page, Gtk.Label(label="Wi-Fi"))
 
@@ -3463,7 +4157,7 @@ def launch_gui(confirm=True, tab=None):
     cp.pack_start(dim("Pick the accent colour used everywhere: window borders, the bar, menus, notifications, "
                       "the lock screen and this window. Black and the greys stay as they are. "
                       "Press Apply to use it (the bar and borders refresh by themselves)."), False, False, 0)
-    acc = {"v": norm_accent((settings.get("colors") or {}).get("accent")) or ACCENT_DEFAULT}
+    acc = {"v": live_accent["v"]}
     sw_css = "".join("button.sw-%s, button.sw-%s:hover { background-color: %s; border: 2px solid #303030; "
                      "padding: 0; min-height: 44px; }\n" % (k, k, hx) for k, _n, hx in ACCENT_PRESETS)
     sw_css += "button.sw-on, button.sw-on:hover { border: 3px solid #ffffff; }\n"
@@ -3513,7 +4207,18 @@ def launch_gui(confirm=True, tab=None):
         lb = Gtk.Label(label=txt)
         lb.get_style_context().add_class(cls)
         pv_bar.pack_end(lb, False, False, 8)
-    cp.pack_start(pv_bar, False, False, 0)
+    if have_cairo:                  # the real bar, in the style chosen in the Appearance tab
+        col_bar = Gtk.DrawingArea()
+        col_bar.set_size_request(-1, 45)
+        col_bar.connect("draw", lambda area, cr: paint_bar(
+            cr, area.get_allocated_width(), bar_style.get_active_id() or BAR_DEFAULT["style"],
+            bar_div.get_active_id() or BAR_DEFAULT["divider"], live_accent["v"], bar_size.get_active_id() or "large",
+            (["playerctl"] if bar_media.get_active() else []) + preview_items, title=bar_title.get_active(),
+            spacing=clean_spacing(int(round(bar_space.get_value())))) and False)
+        accent_listeners.append(col_bar.queue_draw)
+        cp.pack_start(col_bar, False, False, 0)
+    else:
+        cp.pack_start(pv_bar, False, False, 0)
     pv_win = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     pv_win.get_style_context().add_class("pv-win")
     lb = Gtk.Label(label="A focused window has this border", xalign=0)
@@ -3538,7 +4243,9 @@ def launch_gui(confirm=True, tab=None):
         hx = norm_accent(hx)
         if not hx:
             return
-        acc["v"] = hx
+        acc["v"] = live_accent["v"] = hx
+        for fn in accent_listeners:
+            fn()
         for _k, (btn, bhx) in sw_buttons.items():
             ctx = btn.get_style_context()
             (ctx.add_class if bhx == hx else ctx.remove_class)("sw-on")
@@ -3657,6 +4364,7 @@ def launch_gui(confirm=True, tab=None):
         safe("apps", apply_apps, settings)
         settings["tiling"] = {"mode": tiling_mode.get_active_id() or "dwindle"}
         safe("tiling", apply_tiling, settings)
+        settings["gestures"] = {"enabled": gest_on.get_active(), "natural": gest_dir.get_active_id() != "reverse"}
         settings["sound"] = {"volume_feedback": fx_vol.get_active(), "screenshot_sound": fx_shot.get_active()}
         safe("sound", apply_sound, settings)
         safe("keybindings", kb_commit)
@@ -3665,17 +4373,21 @@ def launch_gui(confirm=True, tab=None):
             chosen = None
             if not bar_all.get_active():
                 bar_all.set_active(True)      # nothing ticked = show everywhere, never a bar-less desktop
-        old_bar = settings.get("bar") or {}
+        old_choice = bar_choice(settings)
         settings["bar"] = {"position": bar_pos.get_active_id() or "top", "monitors": chosen,
                            "size": bar_size.get_active_id() or BAR_DEFAULT["size"],
                            "style": bar_style.get_active_id() or BAR_DEFAULT["style"],
                            "divider": bar_div.get_active_id() or BAR_DEFAULT["divider"],
-                           "title": bar_title.get_active(), "media": bar_media.get_active()}
-        if settings["bar"] != {"position": old_bar.get("position", "top"), "monitors": old_bar.get("monitors"),
-                               "size": old_bar.get("size") if old_bar.get("size") in BAR_SIZES else BAR_DEFAULT["size"],
-                               "style": old_bar.get("style", BAR_DEFAULT["style"]),
-                               "divider": old_bar.get("divider", BAR_DEFAULT["divider"]),
-                               "title": old_bar.get("title") is True, "media": old_bar.get("media") is True}:
+                           "title": bar_title.get_active(), "media": bar_media.get_active(),
+                           "spacing": clean_spacing(int(bar_space.get_value()))}
+        old_icon = wifi_tray_icon(settings)
+        settings["network"] = {"tray_icon": wf_tray.get_active()}
+        # the bar (launch.sh) and the gesture / Wi-Fi helpers read settings.json themselves: save it before them
+        safe("saving the settings", save_settings, settings)
+        safe("gestures", apply_gestures, settings)
+        if wifi_tray_icon(settings) != old_icon:
+            safe("Wi-Fi icon", apply_net_applet, settings, restart=True)
+        if bar_choice(settings) != old_choice:
             safe("bar", apply_bar, settings)       # only restart the bar when its settings actually changed
         before = snapshot_monitors()
         new_mon = collect_monitors() if widgets else {}
@@ -3787,10 +4499,23 @@ def main(argv):
     global DRY
     DRY = "--dry-run" in argv
     if "--bar-env" in argv:
-        print(bar_env(load_settings()))
+        settings = load_settings()
+        try:
+            write_bar_style(settings)
+        except OSError as e:                            # the bar still starts (with the last style written)
+            print("i3 settings: could not write %s: %s" % (POLYBAR_STYLE, e), file=sys.stderr)
+        print(bar_env(settings))
         return 0
     if "--apply" in argv:
         apply_all(load_settings())
+        return 0
+    if "--refresh-files" in argv:
+        return refresh_files(load_settings())
+    if "--gestures" in argv:                            # for Gestures.sh: are the swipe gestures switched on?
+        print("on" if gesture_choice(load_settings())["enabled"] else "off")
+        return 0
+    if "--wifi-icon" in argv:                           # for NetApplet.sh: show nm-applet's tray icon?
+        print("on" if wifi_tray_icon(load_settings()) else "off")
         return 0
     if "--help" in argv or "-h" in argv:
         print(__doc__)
@@ -3806,7 +4531,6 @@ def main(argv):
     except ImportError:
         # `python3` may be a pyenv/conda/venv one without GTK: retry with the system Python that has it
         if not os.environ.get("I3DOTS_REEXEC"):
-            import glob
             check = "import gi; gi.require_version('Gtk', '3.0'); from gi.repository import Gtk"
             cands = ["/usr/bin/python3"] + sorted(glob.glob("/usr/bin/python3.*[0-9]"), reverse=True)
             for cand in cands:

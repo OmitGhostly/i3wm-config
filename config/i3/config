@@ -391,7 +391,7 @@ for_window [title="^(Add Folder to Workspace|Save As|Open Files)$"] floating ena
 for_window [class="^yad$"] floating enable, move position center
 for_window [class="(?i)^(pavucontrol|org.pulseaudio.pavucontrol|com.saivert.pwvucontrol)$"] floating enable, resize set 900 600, move position center
 for_window [class="(?i)^nm-connection-editor$"] floating enable, move position center
-for_window [class="(?i)^nm-applet$" title="^Wi-Fi Network Authentication Required$"] floating enable, move position center
+for_window [class="(?i)^nm-applet$"] floating enable, move position center
 for_window [class="(?i)^(nwg-look|nwg-displays|arandr|blueman-manager)$"] floating enable, move position center
 for_window [instance="^i3dots-settings$" window_type="normal"] floating enable, move position center
 for_window [class="(?i)^(nvidia-settings|org.kde.kwalletmanager|bitwarden|com.github.wwmm.easyeffects|io.github.amit9838.mousam|nz.co.mega.megasync|wihotspot|wihotspot-gui|ferdium)$"] floating enable, move position center
@@ -411,7 +411,9 @@ exec --no-startup-id ~/.config/i3/scripts/Polkit.sh
 exec --no-startup-id ~/.config/i3/scripts/Picom.sh
 exec --no-startup-id dunst
 exec --no-startup-id ~/.config/i3/scripts/Wallpaper.sh --restore
-exec --no-startup-id nm-applet
+# NetworkManager's password helper (nm-applet), with its tray icon hidden: the Wi-Fi item in the bar opens
+# Settings > Wi-Fi instead. The icon can be switched back on there. (exec_always: it only starts once.)
+exec_always --no-startup-id ~/.config/i3/scripts/NetApplet.sh
 exec --no-startup-id xss-lock --transfer-sleep-lock -- ~/.config/i3/scripts/LockScreen.sh
 exec --no-startup-id ~/.config/i3/scripts/ClipDaemon.sh
 # saved mouse / monitor settings (written by the settings window), then re-draw the bar for the new layout
@@ -425,6 +427,8 @@ exec_always --no-startup-id ~/.config/polybar/launch.sh
 # Hyprland-style spiral tiling (new windows split the focused one along its longer side). Only one copy runs;
 # it follows i3 through restarts. Mode: SUPER+ALT+T or Settings > Appearance > Window tiling.
 exec_always --no-startup-id ~/.config/i3/scripts/AutoTiling.py
+# touchpad: swipe with three fingers to go to the next / previous workspace (Touchégg; Settings > Mouse & touchpad)
+exec_always --no-startup-id ~/.config/i3/scripts/Gestures.sh
 
 # ---- used by the settings window while it records a new key (leaves with XF86Launch9) ----
 mode "keycapture" {

@@ -8,7 +8,6 @@
 # Script for Monitor backlights (if supported) using brightnessctl
 
 iDIR="${XDG_CONFIG_HOME:-$HOME/.config}/i3/icons"
-notification_timeout=1000
 step=10  # INCREASE/DECREASE BY THIS VALUE
 
 # Get current brightness as an integer (without %)

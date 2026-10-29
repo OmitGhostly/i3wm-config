@@ -138,19 +138,19 @@ fi
 packages_for() {
   local common="polybar picom dunst rofi kitty feh maim xdotool xclip xss-lock i3lock imagemagick
     brightnessctl pamixer playerctl pavucontrol redshift numlockx jq curl unzip arandr git mpv xdg-utils
-    fontconfig lxappearance fastfetch python3 bluez blueman clipmenu|copyq"
+    fontconfig lxappearance fastfetch python3 bluez blueman clipmenu|copyq touchegg"
   case "$FAMILY" in
     fedora) echo "i3 xorg-x11-server-Xorg xset|/usr/bin/xset xrdb|/usr/bin/xrdb xsetroot|/usr/bin/xsetroot adwaita-cursor-theme xrandr|/usr/bin/xrandr
                   xprop|/usr/bin/xprop xdpyinfo|/usr/bin/xdpyinfo setxkbmap|/usr/bin/setxkbmap xinput|/usr/bin/xinput
                   network-manager-applet thunar polkit-gnome libnotify|/usr/bin/notify-send
                   libqalculate|/usr/bin/qalc google-noto-color-emoji-fonts|google-noto-emoji-color-fonts
-                  swappy python3-gobject gtk3 glx-utils|/usr/bin/glxinfo pulseaudio-utils|/usr/bin/pactl sound-theme-freedesktop $common" ;;
+                  swappy python3-gobject python3-cairo gtk3 glx-utils|/usr/bin/glxinfo pulseaudio-utils|/usr/bin/pactl sound-theme-freedesktop $common" ;;
     arch)   echo "i3-wm xorg-server xorg-xset xorg-xrdb xorg-xsetroot adwaita-icon-theme xorg-xrandr xorg-xprop xorg-xdpyinfo xorg-setxkbmap xorg-xinput
                   network-manager-applet thunar polkit-gnome libnotify libqalculate swappy bluez-utils
-                  noto-fonts-emoji python-gobject gtk3 mesa-utils libpulse sound-theme-freedesktop $common" ;;
+                  noto-fonts-emoji python-gobject python-cairo gtk3 mesa-utils libpulse sound-theme-freedesktop $common" ;;
     debian) echo "i3 xserver-xorg x11-xserver-utils x11-utils x11-xkb-utils xinput network-manager-gnome thunar
                   policykit-1-gnome|polkit-gnome|lxpolkit libnotify-bin qalc|libqalculate-utils
-                  fonts-noto-color-emoji python3-gi gir1.2-gtk-3.0 mesa-utils pulseaudio-utils sound-theme-freedesktop $common" ;;
+                  fonts-noto-color-emoji python3-gi python3-gi-cairo gir1.2-gtk-3.0 mesa-utils pulseaudio-utils sound-theme-freedesktop $common" ;;
   esac
 }
 
@@ -249,7 +249,7 @@ install_packages() {
     warn "Unsupported distro (automated: Fedora, Arch and Debian/Ubuntu families)."
     warn "Install yourself:  i3 (>=4.22) xorg polybar picom dunst rofi kitty feh maim xdotool xclip xss-lock i3lock"
     warn "  imagemagick brightnessctl pamixer playerctl pavucontrol nm-applet redshift clipmenu|copyq numlockx xinput"
-    warn "  xrandr xprop xdpyinfo setxkbmap libnotify mpv qalc jq curl arandr thunar polkit-gnome lxappearance fastfetch bluez blueman pactl"
+    warn "  xrandr xprop xdpyinfo setxkbmap libnotify mpv qalc jq curl arandr thunar polkit-gnome lxappearance fastfetch bluez blueman pactl touchegg"
     warn "then re-run with --no-packages"
     return 0
   fi
@@ -293,6 +293,12 @@ install_packages() {
      && ! systemctl is-enabled bluetooth >/dev/null 2>&1; then
     say "enabling the bluetooth service"
     run $SUDO systemctl enable --now bluetooth || warn "could not enable bluetooth - run: sudo systemctl enable --now bluetooth"
+  fi
+  # three-finger swipes: Touchégg reads the touchpad in a system service; your session runs its client (Gestures.sh)
+  if command -v touchegg >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 \
+     && systemctl cat touchegg.service >/dev/null 2>&1 && ! systemctl is-enabled touchegg >/dev/null 2>&1; then
+    say "enabling the touchegg service (touchpad swipe gestures)"
+    run $SUDO systemctl enable --now touchegg || warn "could not enable touchegg - run: sudo systemctl enable --now touchegg"
   fi
 }
 
@@ -355,6 +361,15 @@ done
 if [ "$dry" -eq 0 ]; then
   find "$cfg/i3/scripts" -type f \( -name '*.sh' -o -name '*.py' \) -exec chmod +x {} + 2>/dev/null || true
   chmod +x "$cfg/polybar/launch.sh" 2>/dev/null || true
+  # the fresh files have the default look: write your saved settings (accent colour, gaps, keybinds, opacity,
+  # terminal theme and text size, cursor, apps) back into them, so restarting i3 (SUPER+SHIFT+R) shows them at once
+  if [ -f "$cfg/i3/settings.json" ] && command -v python3 >/dev/null 2>&1; then
+    if python3 "$cfg/i3/scripts/SettingsGUI.py" --refresh-files >/dev/null 2>&1; then
+      say "kept your saved settings (Settings window) in the new files"
+    else
+      warn "could not re-apply your saved settings now - they come back at your next login"
+    fi
+  fi
 fi
 choose_terminal
 install_shell_hook
@@ -417,7 +432,9 @@ cat <<MSG
 
 Done.  $how
   - SUPER+H shows every keybind.  SUPER+W picks a wallpaper.
-  - SUPER+ALT+M opens Settings (mouse, displays, appearance, accent colour, terminal themes, keybindings, sound, Bluetooth, Wi-Fi).
+  - SUPER+ALT+M opens Settings (mouse and touchpad gestures, displays, appearance and bar styles, accent colour,
+    terminal themes, keybindings, sound, Bluetooth, Wi-Fi).
+  - On a touchpad, swipe with three fingers to change workspace (left = next, right = previous).
   - Terminal: Ghostty (kitty if Ghostty could not be installed). Change it in ~/.config/i3/defaults.conf
   - Your old desktop is untouched - pick it again at the login screen any time.
   - Undo the dotfiles:  ./install.sh --restore

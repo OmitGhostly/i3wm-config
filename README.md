@@ -3,7 +3,7 @@
 An **i3wm (X11)** port of [LinuxBeginnings/Hyprland-Dots](https://github.com/LinuxBeginnings/Hyprland-Dots).
 Hyprland is a Wayland compositor, so every Wayland-only piece was swapped for an X11 equivalent while keeping
 the keybinds, and restyled as a **simple, sleek black & white** desktop: flat white-on-black polybar with roman-numeral
-workspaces, chunky borders and gaps, monochrome rofi / dunst / kitty / ghostty / cava, grayscale wallpapers (or pick any accent colour in Settings > Colors), and a
+workspaces, chunky borders and gaps, monochrome rofi / dunst / kitty / ghostty / cava, four photo wallpapers (or pick any accent colour in Settings > Colors), and a
 **Pokémon fastfetch** greeting in every new **Ghostty** (or kitty) window. Ghostty is the default terminal; kitty is the automatic fallback.
 
 **Design & tools** follow [addy-dclxvi/i3-starterpack](https://github.com/addy-dclxvi/i3-starterpack) (gaps, thick borders, roman workspaces),
@@ -12,9 +12,13 @@ workspaces, chunky borders and gaps, monochrome rofi / dunst / kitty / ghostty /
 
 ![preview](docs/preview.png)
 
-The bar in the default *Blocks* style (Settings > Appearance > Bar; the colours follow the accent colour):
+The bar in the default style - every item in its own block in your accent colour (Settings > Appearance > Bar):
 
 ![bar](docs/bar-blocks.png)
+
+All eight bar styles (each also comes in four block shapes, any colour, three sizes and adjustable spacing):
+
+![bar styles](docs/bar-styles.png)
 
 ## Quick start
 
@@ -75,7 +79,7 @@ New windows tile in a spiral, the same way Hyprland does it (`SUPER+ALT+T` switc
 
 ## Updating
 
-`sudo dnf upgrade` updates the *programs* (i3, polybar, picom, rofi, ...) but never touches your configs in `~/.config`, so your setup stays as it is. To get newer versions of these dotfiles, `git pull` and re-run `./install.sh --no-packages`: your original configs stay backed up as `*.bak-<timestamp>` (re-installs replace the previous install without piling up more backups, so `--restore` always returns your original setup) and your `~/.config/i3/settings.json` (Settings window choices) is kept.
+`sudo dnf upgrade` updates the *programs* (i3, polybar, picom, rofi, ...) but never touches your configs in `~/.config`, so your setup stays as it is. To get newer versions of these dotfiles, `git pull` and re-run `./install.sh` (it only adds programs that are missing, such as Touchégg for the swipe gestures; `--no-packages` skips that step): your original configs stay backed up as `*.bak-<timestamp>` (re-installs replace the previous install without piling up more backups, so `--restore` always returns your original setup) and your `~/.config/i3/settings.json` (Settings window choices) is kept.
 
 ## Security notes
 
@@ -93,6 +97,8 @@ New windows tile in a spiral, the same way Hyprland does it (`SUPER+ALT+T` switc
 - Mimikyu greeting shows twice: another line in `~/.zshrc` or `~/.bashrc` also prints a greeting. Find it with `grep -n 'fastfetch\|PokeFetch\|pokemon' ~/.zshrc ~/.bashrc` and delete the line that isn't marked `# i3wm-dots`. Re-running the installer leaves exactly one of ours.
 - No transparency, shadows or blur: the compositor could not use your GPU (common in virtual machines); `Picom.sh` then falls back to picom's software backend automatically. Toggle the compositor with `SUPER+ALT+O`.
 - i3 itself froze or crashed: i3 shows a prompt to restart it in place (your windows stay open). Keep i3 up to date: 4.24 and 4.25 fixed several crashes (Debian/Ubuntu still ship 4.23).
+- Three-finger swipes do nothing: Settings > Mouse & touchpad shows whether Touchégg is missing or its service is stopped (`sudo systemctl enable --now touchegg`); the gestures need a touchpad that reports three fingers (libinput) and an X11 session.
+- The Wi-Fi tray icon is still there after updating: it goes at the next login, or right away with `~/.config/i3/scripts/NetApplet.sh restart`.
 - Install problems: attach `~/.cache/i3wm-dots-install.log`; `./install.sh --restore` brings back your old configs.
 
 ## Compatibility
@@ -110,21 +116,21 @@ Checked against the real tools, not only the docs:
 
 Fixed along the way: Polybar's `override-redirect` made i3 ignore the bar's reserved space (windows tiled underneath it) - removed.
 Polybar, picom and pamixer are in Fedora 43/44 repos (confirmed on packages.fedoraproject.org).
-**Not yet tested on real hardware:** Ghostty itself (it could not be installed in the test environment; the terminal key, drop-down terminal and fallback logic were tested with a stand-in), dunst running (needs a desktop D-Bus session), lock screen, touchpad / brightness / media keys, multi-monitor, and a real `dnf` run.
+**Not yet tested on real hardware:** Ghostty itself (it could not be installed in the test environment; the terminal key, drop-down terminal and fallback logic were tested with a stand-in), dunst running (needs a desktop D-Bus session), lock screen, touchpad / brightness / media keys, the three-finger swipe gestures (Touchégg needs a real touchpad; the workspace switching itself was tested against i3), hiding the Wi-Fi tray icon (tested with a stand-in for nm-applet), multi-monitor, and a real `dnf` run.
 
 ## Settings window
 
 Press `SUPER+ALT+M` (or run `~/.config/i3/scripts/SettingsGUI.py`). Changes are applied immediately and saved to `~/.config/i3/settings.json`, which is re-applied at every login.
 
-- **Mouse:** pick a device (or all mice and touchpads), set pointer speed, and turn acceleration on or off. A **Mouse cursor** section below picks the cursor theme and size (with a preview). It sets `~/.icons/default`, Xresources and GTK, so it applies to newly opened programs.
+- **Mouse:** pick a device (or all mice and touchpads), set pointer speed, and turn acceleration on or off. **Touchpad gestures:** swipe with three fingers to change workspace - left goes to the next one (1 -> 2 -> 3, like a Mac; an empty workspace opens too), right goes back; the direction can be flipped or the gestures switched off. They use [Touchégg](https://github.com/JoseExposito/touchegg) (installed and its service enabled by the installer). A **Mouse cursor** section below picks the cursor theme and size (with a preview). It sets `~/.icons/default`, Xresources and GTK, so it applies to newly opened programs.
 - **Displays:** a Windows-style layout grid. Drag the numbered screens to match your desk; they snap to each other's edges. Click a screen to set its resolution, refresh rate, orientation (landscape, portrait, flipped), **scale** (100-300%; makes everything bigger on that screen, done with `xrandr --scale`, so values above 100% look slightly softer than native), enable/disable it, or make it primary. **Identify** flashes each screen's number on that monitor.
-- **Appearance:** sliders for the opacity of the focused window, of unfocused windows and of the **terminal background** (20-100%; the terminal slider writes `background-opacity` for Ghostty and `background_opacity` for kitty and reloads them live, so only the terminal's background turns see-through). Writes `active-opacity` / `inactive-opacity` in `~/.config/picom/picom.conf` and restarts picom. Needs the compositor running. The same tab sets the **gaps** between windows and around the screen edge (0-40 px) and whether a lone window gets no gaps; these are written to `gaps inner` / `gaps outer` / `smart_gaps` in `~/.config/i3/config`. **Window tiling** chooses how new windows are placed: *Spiral, like Hyprland* (the default: a new window takes half of the window you are using, side by side when it is wide and top/bottom when it is tall, the same as Hyprland's dwindle layout) or *Classic i3* (new windows open next to each other); `SUPER+ALT+T` switches between them too. A **Bar** section sets the bar's **style** - *Blocks* (the default: every item on the right, from Wi-Fi, Bluetooth and volume to battery, CPU, RAM, the clock and the power button, sits in its own highlighted block, shading from dark to your accent colour, with black or white text picked for contrast) or *Flat* (plain text, the original look) - and the **block shape** (Rounded, Arrows, Slanted or Square); the active window's title and the song/video that is playing are hidden unless you switch them on (*Show the window title*, *Show what is playing*); its position (top or bottom; left/right is not possible with Polybar), its **size** (Normal / Large / Extra large: taller bar and bigger text, Large is the default for sharper text) and which monitors show it (all, or only the ones you tick, numbered like the Displays tab).
+- **Appearance:** sliders for the opacity of the focused window, of unfocused windows and of the **terminal background** (20-100%; the terminal slider writes `background-opacity` for Ghostty and `background_opacity` for kitty and reloads them live, so only the terminal's background turns see-through). Writes `active-opacity` / `inactive-opacity` in `~/.config/picom/picom.conf` and restarts picom. Needs the compositor running. The same tab sets the **gaps** between windows and around the screen edge (0-40 px) and whether a lone window gets no gaps; these are written to `gaps inner` / `gaps outer` / `smart_gaps` in `~/.config/i3/config`. **Window tiling** chooses how new windows are placed: *Spiral, like Hyprland* (the default: a new window takes half of the window you are using, side by side when it is wide and top/bottom when it is tall, the same as Hyprland's dwindle layout) or *Classic i3* (new windows open next to each other); `SUPER+ALT+T` switches between them too. A **Bar** section sets the bar's **style**, picked from a list that shows a small picture of each one in your colour, with a live **preview** of your exact choice underneath (it follows the Colors tab too): *One colour* (the default: every item on the right - Wi-Fi, Bluetooth, volume, brightness, stay-awake, night light, battery, CPU, RAM, GPU, the clock and the power button - sits in its own block in your accent colour, with black or white text picked for contrast), *Gradient* (blocks shading from dark to your colour), *Alternating* (two shades), *Dark* (dark blocks with text in your colour), *Pill* (every item in one long block), *Powerline* (blocks joined in a chain), *Underline* (plain text with a line in your colour under each item) or *Flat* (plain text, the original look). The **block shape** (Rounded, Arrows, Slanted or Square, also with pictures) sets how the ends of the blocks look, and **Space between blocks** (0-40 px, default 12) how far apart they are. Items your computer has no hardware for (battery on a desktop, Bluetooth, brightness, a GPU sensor) are left out instead of leaving a gap. The active window's title and the song/video that is playing are hidden unless you switch them on (*Show the window title*, *Show what is playing*). Also: the position (top or bottom; left/right is not possible with Polybar), the **size** (Normal: 30 px bar with 16 px text, Large: 38 px with 18 px - the default, Extra large: 44 px with 22 px) and which monitors show it (all, or only the ones you tick, numbered like the Displays tab). The text is drawn at exactly those pixel sizes and the rounded / arrow ends exactly as tall as the bar, which keeps everything sharp (Polybar's own `pixelsize` setting came out at 16.6 px, which is what made the old Normal bar look soft).
 - **Colors:** choose the accent colour of the whole setup - *Mono* (the default white), Cyan, Blue, Green, Purple, Pink, Red, Orange, Yellow, or any custom `#rrggbb` (too-dark colours are refused because they would be unreadable on black). It recolours window borders, the bar, rofi menus, notifications, the lock screen, the stay-awake button, the audio visualizer, the terminal greeting and the Settings window itself. Black and the greys stay. The choice is saved and re-applied at every login (also after re-installing). Terminal *palettes* are separate: use the Themes tab.
 - **Themes:** pick a colour theme for **Ghostty** and for **kitty** from searchable lists, with a live preview of the background, text and the 16 terminal colours. Ghostty lists its built-in themes plus the ones in `~/.config/ghostty/themes`; kitty lists the bundled `kitty-themes`. Apply writes `theme = ...` (Ghostty) or the `include .../kitty-themes/NAME.conf` line (kitty) and reloads open terminals. *Monochrome (default)* is the shipped black & white theme. Each terminal also has a **Text size** (6-36 pt in half steps, with a *Default* button: 12 for Ghostty, 14 for kitty); the preview draws the text at that size. It writes `font-size` / `font_size` and open terminals pick it up (a Ghostty window you zoomed by hand with Ctrl +/- keeps its own size).
 - **Keybindings:** every keybind with its description and a search box. Pick one, press **Change key...** and press the new combination (it can record combos i3 normally swallows, like `SUPER+Return`). If the combo is already used you can swap the two. Applying checks the result with `i3 -C`, writes it into `~/.config/i3/config` and reloads i3; **Reset** puts keys back. Rows for the **file manager, terminal and browser** show the program in brackets, e.g. `file manager (Dolphin)`; **Change application...** lists the installed alternatives (or any command you type) and saves the choice to `~/.config/i3/defaults.conf`. Your changes are remembered in `settings.json` and re-applied after a reinstall or update of the config.
 - **Sound:** pick the output (speakers, headphones, HDMI monitor, Bluetooth headset...) and the microphone, set their volume (0-150%, the same range as the volume keys) and mute them, play a test sound, and set the volume of each app that is playing sound right now (Firefox, Spotify...). Switching the output moves what is already playing over to it. It uses `pactl`, so it works with PipeWire and PulseAudio; changes happen right away and the tab follows changes made with the volume keys. Two switches turn the volume-change and screenshot sound effects on or off. *Open full mixer* starts pavucontrol.
 - **Bluetooth:** a power switch, the list of your paired devices (Connect / Disconnect / Forget), and **Add a device**: put the device in pairing mode, press *Search for devices*, pick it and press *Pair and connect*. It uses `bluetoothctl` (BlueZ; the installer sets up the service). Devices that need a PIN (some keyboards) can be paired with the *Open full Bluetooth manager* button (Blueman).
-- **Wi-Fi:** a power switch, the networks in range (signal, security, saved/connected), Connect (asks for the password the first time; open and remembered networks just connect), Disconnect, Forget network, Scan again, and *Join a hidden network...*. It uses NetworkManager (`nmcli`). The password is passed to `nmcli` on its command line for a moment while joining, so other users on a shared computer could see it in the process list; use the full network editor (`nm-connection-editor`) there. Work/school logins (802.1X) also need the full editor.
+- **Wi-Fi:** a power switch, the networks in range (signal, security, saved/connected), Connect (asks for the password the first time; open and remembered networks just connect), Disconnect, Forget network, Scan again, and *Join a hidden network...*. It uses NetworkManager (`nmcli`). The password is passed to `nmcli` on its command line for a moment while joining, so other users on a shared computer could see it in the process list; use the full network editor (`nm-connection-editor`) there. Work/school logins (802.1X) also need the full editor. The Wi-Fi icon that NetworkManager's applet puts in the tray is **hidden** (the Wi-Fi item in the bar does the same job); the applet itself keeps running in the background so a saved network can still ask for its password. *Wi-Fi icon in the tray* brings the icon back.
 - The window sizes itself to your screen and every tab scrolls, so the Apply button stays visible on small or scaled screens.
 - Only one Settings window opens: pressing `SUPER+ALT+M` again brings it to the front. The bar opens tabs directly: click the Wi-Fi item for the **Wi-Fi** tab, right-click Bluetooth for the **Bluetooth** tab, right-click the volume for the **Sound** tab (or run `SettingsGUI.py --tab NAME`).
 - After applying display changes you get 10 seconds to press **Keep**; if the screen goes dark, wait and the old layout is restored.
@@ -133,6 +139,7 @@ Press `SUPER+ALT+M` (or run `~/.config/i3/scripts/SettingsGUI.py`). Changes are 
 ![displays](docs/settings-displays.png)
 ![dragging a screen](docs/settings-displays-drag.png)
 ![appearance](docs/settings-appearance.png)
+![bar style list](docs/settings-bar-styles.png)
 ![colors](docs/settings-colors.png)
 
 ![themes](docs/settings-themes.png)
@@ -150,8 +157,10 @@ Press `SUPER+ALT+M` (or run `~/.config/i3/scripts/SettingsGUI.py`). Changes are 
 │   ├── polybar/        bar (replaces Waybar)
 │   ├── picom/          compositor: blur, rounded corners, shadows
 │   ├── dunst/          notifications (replaces swaync)
+│   ├── touchegg/       touchpad gestures (three-finger swipe = next / previous workspace)
 │   └── kitty/ ghostty/ wezterm/ starship/ fastfetch/ (Pokémon greeting) btop/ yazi/ cava/ Kvantum/ qt5ct/ qt6ct/ swappy/
-├── wallpapers/         a few starter wallpapers
+├── wallpapers/         four photos (night street lights is the first one you see)
+├── tools/              make_blocks.py: writes config/polybar/blocks.ini (the block bar styles)
 └── LICENSE.md          GPL-3.0 (inherited from the original project)
 ```
 
@@ -175,6 +184,7 @@ Press `SUPER+ALT+M` (or run `~/.config/i3/scripts/SettingsGUI.py`). Changes are 
 | Window groups | i3 tabbed / stacked containers |
 | dwindle layout (spiral tiling) | `AutoTiling.py` - same spiral; `SUPER+ALT+T` turns it off/on |
 | Quickshell / AGS overview | rofi window switcher (`SUPER+A`) |
+| Hyprland touchpad gestures | Touchégg: three-finger swipe changes workspace (`Gestures.sh`, `Workspace.py`) |
 
 ## Keybinds (highlights)
 
@@ -187,6 +197,7 @@ Press `SUPER+ALT+M` (or run `~/.config/i3/scripts/SettingsGUI.py`). Changes are 
 | `SUPER+F` · `SUPER+SPACE` | fullscreen · floating |
 | `SUPER+ALT+1/2/3` | split / stacking / tabbed layout |
 | `SUPER+ALT+T` | spiral tiling like Hyprland (default) ⇄ classic side by side |
+| three fingers ← / → on the touchpad | next / previous workspace |
 | `SUPER+SHIFT+Return` · `SUPER+U` | drop-down terminal · scratchpad |
 | `SUPER+W` · `CTRL+ALT+W` | pick wallpaper · random wallpaper |
 | `SUPER+SHIFT+S` · `SUPER+Print` | screenshot (annotate) · screenshot |
@@ -206,7 +217,7 @@ and the original distro installers (`copy.sh`, `Distro-Hyprland.sh`, dots-tui).
 
 ## Dependencies
 
-`i3 (≥4.22) xorg polybar picom dunst rofi ghostty|kitty feh maim xdotool xclip xss-lock i3lock imagemagick brightnessctl pamixer playerctl pavucontrol nm-applet redshift clipmenu|copyq numlockx xinput xrandr xprop xdpyinfo setxkbmap libnotify mpv qalc jq curl arandr thunar lxappearance fastfetch bluez blueman pactl (pulseaudio-utils / libpulse)`
+`i3 (≥4.22) xorg polybar picom dunst rofi ghostty|kitty feh maim xdotool xclip xss-lock i3lock imagemagick brightnessctl pamixer playerctl pavucontrol nm-applet redshift clipmenu|copyq numlockx xinput xrandr xprop xdpyinfo setxkbmap libnotify mpv qalc jq curl arandr thunar lxappearance fastfetch bluez blueman touchegg pactl (pulseaudio-utils / libpulse)`
 · optional: `pokescript` (cloned by the installer), `swappy`/`flameshot`, `i3lock-color`, `polkit-gnome`, *FantasqueSansM Nerd Font*.
 
 ## Credits & license

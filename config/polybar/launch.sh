@@ -13,37 +13,26 @@ for _ in $(seq 1 15); do
 done
 pkill -KILL -u "$UID" -x polybar 2>/dev/null
 while pgrep -u "$UID" -x polybar >/dev/null; do sleep 0.1; done
-BAR_BOTTOM=false; BAR_MONITORS=""; BAR_HEIGHT=38; BAR_FONT=13.5; BAR_STYLE=blocks; BAR_DIVIDER=rounded
-BAR_SHOW_TITLE=false; BAR_SHOW_MEDIA=false
+# defaults (the Large size, one-colour blocks), used as they are if the settings window cannot be asked
+# (python missing, a damaged settings file)
+F="FantasqueSansM Nerd Font Mono"
+BAR_BOTTOM=false; BAR_MONITORS=""; BAR_HEIGHT=38; BAR_STYLE=solid; BAR_NAME=blocks
+BAR_FONT_SPEC="$F:size=13.5;3"; BAR_ICON_SPEC="$F:size=16.5;4"; BAR_CAP_SPEC="$F:size=27.277;5"
+BAR_LEFT="i3"; BAR_BATTERY=BAT0; BAR_ADAPTER=AC
+BAR_RIGHT="network bluetooth pulseaudio backlight caffeine nightlight battery cpu memory gpu date powermenu"
+BAR_RIGHT_B=""
 # crisp text: grayscale anti-aliasing with light hinting (applies to programs started afterwards too)
 command -v xrdb >/dev/null 2>&1 && printf 'Xft.antialias: 1\nXft.hinting: 1\nXft.hintstyle: hintslight\nXft.rgba: none\n' | xrdb -merge 2>/dev/null
+# the saved choices (Settings > Appearance > Bar): position, size (the font lines, in exact whole pixels so the text
+# is sharp), style, which items to show (an item the computer has no hardware for is left out). This also writes
+# style.ini: the colours, block ends and spacing of the chosen style
 eval "$(python3 "${XDG_CONFIG_HOME:-$HOME/.config}/i3/scripts/SettingsGUI.py" --bar-env 2>/dev/null)"
 if [ "$BAR_BOTTOM" = true ]; then BORDER_BOTTOM=0; BORDER_TOP=1; else BORDER_BOTTOM=1; BORDER_TOP=0; fi
-BAR_FONT_SPEC="FantasqueSansM Nerd Font Mono:size=${BAR_FONT:-13.5};3"
-# bigger icon font (+3pt = +4px, still whole pixels) for the stay-awake mug
-BAR_ICON_SPEC="FantasqueSansM Nerd Font Mono:size=$(awk -v f="${BAR_FONT:-13.5}" 'BEGIN{printf "%g", f+3}');4"
-# "blocks" style: the divider at each end of a block is a Nerd Font powerline glyph, sized so it is exactly as tall
-# as the bar (the glyph spans 2170/2048 of the font size; the bar's 1px border line is not part of the blocks)
-case "$BAR_DIVIDER" in                            # (UTF-8 bytes, so this works whatever the locale)
-  arrows)  BAR_CAP_L=$(printf '\xee\x82\xb2'); BAR_CAP_R=$(printf '\xee\x82\xb0') ;;
-  slanted) BAR_CAP_L=$(printf '\xee\x82\xba'); BAR_CAP_R=$(printf '\xee\x82\xbc') ;;
-  square)  BAR_CAP_L=""; BAR_CAP_R="" ;;
-  *)       BAR_CAP_L=$(printf '\xee\x82\xb6'); BAR_CAP_R=$(printf '\xee\x82\xb4') ;;   # rounded (default)
-esac
-cap_px=$(( ( (BAR_HEIGHT - 1) * 2048 + 2169 ) / 2170 + 1 ))
-# polybar places the glyph a little high; shifting it down by ~20% of its size centres it (measured at 30/38/44 px)
-cap_off=$(( (cap_px * 2 + 5) / 10 ))
-BAR_CAP_SPEC="FantasqueSansM Nerd Font Mono:pixelsize=${cap_px};${BAR_CAP_OFFSET:-$cap_off}"
-BAR_BLOCK_GAP=1
-BAR_NAME=main; [ "$BAR_STYLE" = blocks ] && BAR_NAME=blocks
-# which items show: the active window's title (left) and what is playing (right) are off unless switched on
-right="network bluetooth pulseaudio backlight caffeine nightlight battery cpu memory gpu date powermenu"
-[ "$BAR_SHOW_MEDIA" = true ] && right="playerctl $right"
-BAR_LEFT="i3"; [ "$BAR_SHOW_TITLE" = true ] && BAR_LEFT="i3 xwindow"
-BAR_RIGHT="$right"
-BAR_RIGHT_BLOCKS=$(for m in $right; do printf 'b-%s ' "$m"; done)
-export BAR_BOTTOM BAR_HEIGHT BAR_FONT BAR_FONT_SPEC BAR_ICON_SPEC BORDER_BOTTOM BORDER_TOP BAR_STYLE \
-       BAR_CAP_L BAR_CAP_R BAR_CAP_SPEC BAR_BLOCK_GAP BAR_LEFT BAR_RIGHT BAR_RIGHT_BLOCKS
+case "$BAR_HEIGHT" in ''|*[!0-9]*) BAR_HEIGHT=38 ;; esac
+case "$BAR_NAME" in main|blocks) ;; *) BAR_NAME=blocks ;; esac
+[ -n "$BAR_RIGHT_B" ] || BAR_RIGHT_B=$(for m in $BAR_RIGHT; do printf 'b-%s ' "$m"; done)
+export BAR_BOTTOM BAR_HEIGHT BAR_FONT_SPEC BAR_ICON_SPEC BAR_CAP_SPEC BORDER_BOTTOM BORDER_TOP BAR_STYLE \
+       BAR_LEFT BAR_RIGHT BAR_RIGHT_B BAR_BATTERY BAR_ADAPTER
 all=$(polybar --list-monitors | cut -d: -f1)
 sel=""
 if [ -n "$BAR_MONITORS" ]; then
