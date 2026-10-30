@@ -13,6 +13,8 @@
 #    --no-pokemon    skip pokescript and the shiny Mimikyu fastfetch greeting in the terminal
 #    --no-ghostty    do not install Ghostty (kitty is used as the terminal instead)
 #    --no-backup     overwrite existing configs instead of moving them aside
+#    --no-auto-update do not update the desktop config together with system updates (pacman -Syu / dnf upgrade)
+#    --update        quick re-install of the config files only (used by i3dots-update: no packages, no password)
 #    --restore       put back the newest *.bak-* backups and exit
 #    --dry-run       show what would happen without changing anything
 #    -h, --help      show this help
@@ -32,12 +34,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo /)"
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 do_packages=1; do_wallpapers=0; do_pokemon=1; do_ghostty=1; do_backup=1; do_restore=0; dry=0
+do_autoupdate=1; update_mode=0
+orig_path="$PATH"
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
 say()  { printf '\033[1;35m::\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 for arg in "$@"; do
   case "$arg" in
@@ -49,6 +53,8 @@ for arg in "$@"; do
     --no-backup)   do_backup=0 ;;
     --restore)     do_restore=1 ;;
     --dry-run)     dry=1 ;;
+    --no-auto-update) do_autoupdate=0 ;;
+    --update)      update_mode=1; do_packages=0; do_pokemon=0 ;;   # (pokemon: keep whatever was chosen at install)
     -h|--help)     usage; exit 0 ;;
     *) die "unknown option: $arg (try --help)" ;;
   esac
@@ -325,6 +331,9 @@ if [ "$do_packages" -eq 1 ]; then install_packages; install_font; fi
 install_pokemon
 
 # ---- copy configs ---------------------------------------------------------------
+# a first install (not a re-install over our own files): only then does the first login pick a wallpaper
+first_install=1
+[ -f "$cfg/i3/.i3wm-dots-installed" ] && first_install=0
 say "installing configs into $cfg"
 run mkdir -p "$cfg"
 for d in "$here"/config/*/; do
@@ -392,8 +401,53 @@ if [ "$do_wallpapers" -eq 1 ]; then
   rm -rf "$tmp"
 fi
 
-# first login picks a wallpaper and generates colors
-run rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/i3/first-run-done"
+# first login picks a wallpaper and generates colors (a re-install or update keeps your wallpaper)
+[ "$first_install" -eq 1 ] && run rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/i3/first-run-done"
+
+# ---- updates: keep the config up to date with the repo, together with system updates ---------------
+# (i3dots-update = ~/.config/i3/scripts/Update.sh; the pacman / dnf / apt hook asks it to run after a system update)
+setup_updates() {
+  local state="${XDG_DATA_HOME:-$HOME/.local/share}/i3wm-dots-updater" url="" unit="$cfg/systemd/user/i3dots-update.service"
+  if [ "$dry" -eq 1 ]; then
+    say "would set up i3dots-update$( [ "$do_autoupdate" -eq 1 ] && [ "$do_packages" -eq 1 ] && echo " and the system update hook")"
+    return 0
+  fi
+  mkdir -p "$state" "$cfg/systemd/user" "$HOME/.local/bin"
+  if [ "$update_mode" -eq 0 ]; then
+    # where updates come from: the repo this was installed from (its GitHub address), else the main repo
+    url="$(git -C "$here" remote get-url origin 2>/dev/null || true)"
+    case "$url" in https://*|git@*) ;; *) url="$REPO_URL" ;; esac
+    printf '%s\n' "$url" >"$state/repo-url"
+    git -C "$here" rev-parse HEAD >"$state/applied" 2>/dev/null || rm -f "$state/applied"
+    [ "$do_autoupdate" -eq 1 ] && rm -f "$state/off"
+    [ "$do_autoupdate" -eq 0 ] && : >"$state/off"
+  fi
+  cat >"$unit" <<'UNIT'
+[Unit]
+Description=Update the i3wm-dots desktop config from GitHub (started after a system update)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/i3/scripts/Update.sh --auto
+Nice=10
+UNIT
+  command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/null 2>&1 || true
+  ln -sfn "$cfg/i3/scripts/Update.sh" "$HOME/.local/bin/i3dots-update"
+  [ "$update_mode" -eq 1 ] && return 0
+  case ":$orig_path:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) say "note: ~/.local/bin is not in your PATH - run the updater as ~/.local/bin/i3dots-update (or add that folder to PATH)" ;;
+  esac
+  if [ "$do_autoupdate" -eq 0 ]; then
+    say "automatic config updates are off (update by hand with: i3dots-update)"
+  elif [ "$do_packages" -eq 1 ] && [ "$FAMILY" != unknown ]; then
+    say "setting up config updates together with system updates (pacman -Syu / dnf upgrade / apt upgrade)"
+    bash "$cfg/i3/scripts/Update.sh" --install-hook || warn "could not set up the system update hook - run later: i3dots-update --install-hook"
+  else
+    say "to update the config together with system updates, run once:  i3dots-update --install-hook"
+  fi
+}
+setup_updates
 
 # ---- sanity checks -----------------------------------------------------------------
 if [ "$dry" -eq 0 ]; then
@@ -417,6 +471,10 @@ if [ "$dry" -eq 0 ]; then
 fi
 
 # ---- summary -------------------------------------------------------------------------
+if [ "$update_mode" -eq 1 ]; then
+  say "config updated"
+  exit 0
+fi
 if [ "${#missing[@]}" -gt 0 ]; then
   echo
   warn "could not be installed automatically: $(printf '%s\n' "${missing[@]}" | sort -u | tr '\n' ' ')"
@@ -438,6 +496,8 @@ Done.  $how
   - Terminal: Ghostty (kitty if Ghostty could not be installed). Change it in ~/.config/i3/defaults.conf
   - Your old desktop is untouched - pick it again at the login screen any time.
   - Undo the dotfiles:  ./install.sh --restore
+  - Updates: after a system update (pacman -Syu / dnf upgrade) the config is updated from GitHub too, keeping
+    your Settings. By hand: i3dots-update   Undo the last one: i3dots-update --undo   Turn off: i3dots-update --off
 MSG
 if [ "$FAMILY" = fedora ] && [ "${XDG_SESSION_TYPE:-}" = wayland ]; then
   cat <<'MSG'

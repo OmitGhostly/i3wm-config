@@ -427,6 +427,8 @@ exec --no-startup-id ~/.config/i3/scripts/Nightlight.sh init
 # game mode never survives a logout (its gaps/compositor changes are gone too)
 exec --no-startup-id rm -f ~/.cache/i3/gamemode
 exec --no-startup-id ~/.config/i3/scripts/first-run.sh
+# after a system update you were not logged in for: fetch the newest desktop config from GitHub (i3dots-update)
+exec --no-startup-id ~/.config/i3/scripts/Update.sh --login
 # re-launched on every reload so the bar picks up new colors / monitors
 exec_always --no-startup-id ~/.config/polybar/launch.sh
 # Hyprland-style spiral tiling (new windows split the focused one along its longer side). Only one copy runs;

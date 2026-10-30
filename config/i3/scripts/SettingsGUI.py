@@ -2476,6 +2476,11 @@ label.status { color: #8c8c8c; }
 .mon-sel { background-color: @A@; border-color: @A@; }
 .mon-sel label, .mon-sel .mon-num, .mon-sel .mon-name { color: #000000; }
 .mon-ghost { background-color: @G@; border: 2px solid @S@; }
+.mon-off { background-color: #141414; border: 1px dashed #6e6e6e; }
+.mon-off label, .mon-off .mon-name { color: #6e6e6e; }
+.mon-off .mon-num { font-size: 14pt; }
+.mon-off.mon-sel { border: 2px solid @A@; }
+.mon-off.mon-sel label { color: @A@; }
 .ident { font-size: 72pt; font-weight: bold; color: #000000; background-color: @A@; padding: 10px 40px; }
 button { background-color: #1c1c1c; color: #e6e6e6; border: 1px solid #303030; border-radius: 0; padding: 6px 20px; }
 button:hover { background-color: #303030; }
@@ -2527,6 +2532,9 @@ def launch_gui(confirm=True, tab=None):
     GLib.set_prgname("i3dots-settings")
     Gdk.set_program_class("i3dots-settings")
 
+    if Gdk.Screen.get_default() is None:
+        print("i3 settings: no graphical display (start it from your i3 session, e.g. SUPER+ALT+M)", file=sys.stderr)
+        return 1
     provider = Gtk.CssProvider()
     settings = load_settings()
     live_accent = {"v": saved_accent(settings)}       # the colour picked in the Colors tab, before Apply too
@@ -2814,11 +2822,14 @@ def launch_gui(confirm=True, tab=None):
     widgets = {}
     boxes = {}
     pos = {}
-    ui = {"sel": outputs[0].name if outputs else None, "drag": None}
+    first_on = next((o for o in outputs if saved_m.get(o.name, {}).get("enabled", o.enabled)), None)
+    ui = {"sel": (first_on or outputs[0]).name if outputs else None, "drag": None}
     CW, CH = 790, 290
+    OFF_W, OFF_H, OFF_STRIP = 120, 54, 66      # screens that are switched off: small boxes in a row at the bottom
 
-    mon.pack_start(dim("Drag the numbered screens to match your desk. Click one to change its settings."),
-                   False, False, 0)
+    mon.pack_start(dim("Drag the numbered screens to match your desk. Click one to change its settings. A screen "
+                       "that is switched off stays in the list: it is shown greyed out along the bottom - click it "
+                       "and turn Enabled on to use it again."), False, False, 0)
     canvas = Gtk.Fixed()
     canvas.set_size_request(CW, CH)
     canvas.get_style_context().add_class("canvas")
@@ -2865,7 +2876,7 @@ def launch_gui(confirm=True, tab=None):
                 pos[n] = (x, y)
             placed.append(r)
 
-    def view_for(rects):
+    def view_for(rects, ch=CH):
         if not rects:
             return 1.0, 0.0, 0.0
         x0 = min(r[0] for r in rects)
@@ -2875,27 +2886,32 @@ def launch_gui(confirm=True, tab=None):
         # leave room around the layout so a screen can be dragged to any side
         world_w = (x1 - x0) + 0.9 * max(r[2] for r in rects)
         world_h = (y1 - y0) + 0.9 * max(r[3] for r in rects)
-        sc = min(CW / world_w, CH / world_h)
-        return sc, CW / 2 - (x0 + x1) / 2 * sc, CH / 2 - (y0 + y1) / 2 * sc
+        sc = min(CW / world_w, ch / world_h)
+        return sc, CW / 2 - (x0 + x1) / 2 * sc, ch / 2 - (y0 + y1) / 2 * sc
 
     def place_all(view=None):
         names = enabled_names()
-        sc, ox, oy = view or view_for([rect_of(n) for n in names])
+        off = [o.name for o in outputs if o.name not in names]
+        sc, ox, oy = view or view_for([rect_of(n) for n in names], CH - (OFF_STRIP if off else 0))
         ui["view"] = (sc, ox, oy)
         for o in outputs:
             b = boxes[o.name]
+            ctx = b.get_style_context()
             if o.name in names:
                 x, y, w, h = rect_of(o.name)
                 b.set_size_request(max(30, int(w * sc)), max(24, int(h * sc)))
                 canvas.move(b, int(ox + x * sc), int(oy + y * sc))
-                b.set_opacity(1)
+                ctx.remove_class("mon-off")
+                b.sub.set_text("%s%s" % (o.name, "  ★" if widgets[o.name][4].get_active() else ""))
             else:
-                # (not hide(): a widget hidden before its first layout never gets its size back)
-                canvas.move(b, -5000, -5000)
-                b.set_opacity(0)
-            ctx = b.get_style_context()
+                # switched off: not part of the layout, but still on show (and clickable) so it can be turned back on
+                i = off.index(o.name)
+                b.set_size_request(OFF_W, OFF_H)
+                canvas.move(b, 8 + i * (OFF_W + 10), CH - OFF_H - 6)
+                ctx.add_class("mon-off")
+                b.sub.set_text("%s  (off)" % o.name)
+            b.set_opacity(1)
             (ctx.add_class if o.name == ui["sel"] else ctx.remove_class)("mon-sel")
-            b.sub.set_text("%s%s" % (o.name, "  ★" if widgets[o.name][4].get_active() else ""))
         canvas.move(ghost, -5000, -5000)
         ghost.set_opacity(0)
 
@@ -2908,7 +2924,8 @@ def launch_gui(confirm=True, tab=None):
         if ev.button != 1:
             return False
         select(name)
-        sc, ox, oy = ui["view"]
+        if name not in enabled_names():
+            return True                           # a screen that is off is only selected, not dragged
         ui["drag"] = {"name": name, "x": ev.x_root, "y": ev.y_root, "start": pos[name], "raw": pos[name]}
         return True
 
@@ -3250,7 +3267,8 @@ def launch_gui(confirm=True, tab=None):
     for o in sorted(parse_xrandr(query(["xrandr", "--query"])), key=lambda o: (o.x, o.y)):
         if not o.enabled:
             continue
-        cb = Gtk.CheckButton(label="%d  -  %s%s" % (len(bar_checks) + 1, o.name, "  (primary)" if o.primary else ""))
+        cb = Gtk.CheckButton(label="%d  -  %s%s" % (number.get(o.name, len(bar_checks) + 1), o.name,
+                                                    "  (primary)" if o.primary else ""))
         cb.set_active(not bar_sel or o.name in bar_sel)
         bar_checks[o.name] = cb
         bar_list.pack_start(cb, False, False, 0)
@@ -4733,7 +4751,8 @@ def main(argv):
     if not DRY and hand_over(tab):
         return 0                                        # the open settings window came to the front
     try:
-        launch_gui(confirm="--no-confirm" not in argv, tab=tab)
+        if launch_gui(confirm="--no-confirm" not in argv, tab=tab):
+            return 1                                    # (no display to show it on)
     except ImportError:
         # `python3` may be a pyenv/conda/venv one without GTK: retry with the system Python that has it
         if not os.environ.get("I3DOTS_REEXEC"):
