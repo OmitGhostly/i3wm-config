@@ -146,15 +146,15 @@ packages_for() {
     brightnessctl pamixer playerctl pavucontrol redshift numlockx jq curl unzip arandr git mpv xdg-utils
     fontconfig lxappearance fastfetch python3 bluez blueman clipmenu|copyq touchegg"
   case "$FAMILY" in
-    fedora) echo "i3 xorg-x11-server-Xorg xset|/usr/bin/xset xrdb|/usr/bin/xrdb xsetroot|/usr/bin/xsetroot adwaita-cursor-theme xrandr|/usr/bin/xrandr
+    fedora) echo "i3 xsettingsd xorg-x11-server-Xorg xset|/usr/bin/xset xrdb|/usr/bin/xrdb xsetroot|/usr/bin/xsetroot adwaita-cursor-theme xrandr|/usr/bin/xrandr
                   xprop|/usr/bin/xprop xdpyinfo|/usr/bin/xdpyinfo setxkbmap|/usr/bin/setxkbmap xinput|/usr/bin/xinput
                   network-manager-applet thunar polkit-gnome libnotify|/usr/bin/notify-send
                   libqalculate|/usr/bin/qalc google-noto-color-emoji-fonts|google-noto-emoji-color-fonts
                   swappy python3-gobject python3-cairo gtk3 glx-utils|/usr/bin/glxinfo pulseaudio-utils|/usr/bin/pactl sound-theme-freedesktop $common" ;;
-    arch)   echo "i3-wm xorg-server xorg-xset xorg-xrdb xorg-xsetroot adwaita-icon-theme xorg-xrandr xorg-xprop xorg-xdpyinfo xorg-setxkbmap xorg-xinput
+    arch)   echo "i3-wm xsettingsd xorg-server xorg-xset xorg-xrdb xorg-xsetroot adwaita-icon-theme xorg-xrandr xorg-xprop xorg-xdpyinfo xorg-setxkbmap xorg-xinput
                   network-manager-applet thunar polkit-gnome libnotify libqalculate swappy bluez-utils
                   noto-fonts-emoji python-gobject python-cairo gtk3 mesa-utils libpulse sound-theme-freedesktop $common" ;;
-    debian) echo "i3 xserver-xorg x11-xserver-utils x11-utils x11-xkb-utils xinput network-manager-gnome thunar
+    debian) echo "i3 xsettingsd xserver-xorg x11-xserver-utils x11-utils x11-xkb-utils xinput network-manager-gnome thunar
                   policykit-1-gnome|polkit-gnome|lxpolkit libnotify-bin qalc|libqalculate-utils
                   fonts-noto-color-emoji python3-gi python3-gi-cairo gir1.2-gtk-3.0 mesa-utils pulseaudio-utils sound-theme-freedesktop $common" ;;
   esac

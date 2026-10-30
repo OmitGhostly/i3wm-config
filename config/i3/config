@@ -419,6 +419,8 @@ exec --no-startup-id ~/.config/i3/scripts/Wallpaper.sh --restore
 # NetworkManager's password helper (nm-applet), with its tray icon hidden: the Wi-Fi item in the bar opens
 # Settings > Wi-Fi instead. The icon can be switched back on there. (exec_always: it only starts once.)
 exec_always --no-startup-id ~/.config/i3/scripts/NetApplet.sh
+# the cursor you picked in Settings > Mouse, also for GTK / Flatpak apps (xsettingsd; exec_always: starts once)
+exec_always --no-startup-id ~/.config/i3/scripts/XSettings.sh
 exec --no-startup-id xss-lock --transfer-sleep-lock -- ~/.config/i3/scripts/LockScreen.sh
 exec --no-startup-id ~/.config/i3/scripts/ClipDaemon.sh
 # saved mouse / monitor settings (written by the settings window), then re-draw the bar for the new layout

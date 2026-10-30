@@ -567,6 +567,36 @@ CURSOR_DEFAULT_SIZE = 24
 CURSOR_SIZES = [16, 24, 32, 48, 64, 96]
 
 
+def current_cursor():
+    """(theme or None, size) of the cursor the desktop uses right now: ~/.icons/default and the X resources, else
+    the size X picks by itself (libXcursor: Xft.dpi * 16 / 72, else the shorter screen side / 48), rounded to one
+    of CURSOR_SIZES. The settings window starts from this, so it shows - and keeps - what you already have."""
+    theme = None
+    try:
+        with open(os.path.expanduser("~/.icons/default/index.theme")) as f:
+            m = re.search(r"^[ \t]*Inherits[ \t]*=[ \t]*([^,\n]+)", f.read(), re.M)
+            theme = m.group(1).strip() if m else None
+    except (OSError, UnicodeDecodeError):
+        pass
+    res = query(["xrdb", "-query"])
+    m = re.search(r"^Xcursor\.theme:\s*(\S+)", res, re.M)
+    theme = theme or (m.group(1) if m else None)
+    size = None
+    m = re.search(r"^Xcursor\.size:\s*(\d+)", res, re.M)
+    if m:
+        size = int(m.group(1))
+    else:
+        dpi = re.search(r"^Xft\.dpi:\s*(\d+)", res, re.M)
+        if dpi:
+            size = int(dpi.group(1)) * 16 // 72
+        else:
+            dim = re.search(r"dimensions:\s*(\d+)x(\d+) pixels", query(["xdpyinfo"]))
+            if dim:
+                size = min(int(dim.group(1)), int(dim.group(2))) // 48
+    size = min(CURSOR_SIZES, key=lambda v: abs(v - size)) if size else CURSOR_DEFAULT_SIZE
+    return theme, size
+
+
 def list_cursor_themes():
     """Names of installed cursor themes (icon themes that ship a cursors/ folder)."""
     dirs = [os.path.expanduser("~/.icons"), os.path.expanduser("~/.local/share/icons"),
@@ -608,8 +638,42 @@ def _write_if_changed(path, text):
     os.replace(path + ".i3tmp", path)
 
 
+XSETTINGSD_CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "xsettingsd",
+                               "xsettingsd.conf")
+XPROFILE_MARK = ("# >>> i3wm-dots cursor (Settings > Mouse > Mouse cursor) >>>",
+                 "# <<< i3wm-dots cursor <<<")
+
+
+def _set_block(text, lines):
+    """Put `lines` between the XPROFILE_MARK lines of a shell file (replacing an older copy of the block)."""
+    start, end = XPROFILE_MARK
+    block = "\n".join([start] + lines + [end])
+    pat = re.compile(r"^%s$.*?^%s$\n?" % (re.escape(start), re.escape(end)), re.M | re.S)
+    if pat.search(text):
+        return pat.sub(block + "\n", text, count=1)
+    return (text + ("\n" if text and not text.endswith("\n") else "") + block + "\n")
+
+
+def _edit_ini(path, theme, size):
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        text = "[Settings]\n"
+    text = _set_ini_key(text, "gtk-cursor-theme-name", theme)
+    text = _set_ini_key(text, "gtk-cursor-theme-size", size)
+    _write_if_changed(path, text)
+
+
 def apply_cursor(settings):
-    """Make the cursor theme/size the default for X apps (~/.icons/default, Xresources) and GTK apps."""
+    """Make the chosen cursor theme / size the one every program uses, so it does not change as the pointer moves
+    from one window to another. Each kind of program looks in its own place:
+      plain X programs, i3, the bar     X resources (Xcursor.theme / .size) + the "default" theme in ~/.icons and
+                                        ~/.local/share/icons (+ the desktop background via xsetroot)
+      GTK 3 / GTK 4 apps                gtk-3.0 / gtk-4.0 settings.ini, and live through xsettingsd (open GTK apps
+                                        switch at once; Flatpak apps read it too)
+      Qt, Electron, Java, Flatpak       XCURSOR_THEME / XCURSOR_SIZE: ~/.xprofile and environment.d (from the next
+                                        login on) and the session bus (programs it starts)"""
     cfg = settings.get("cursor") or {}
     theme = cfg.get("theme")
     if not theme:
@@ -617,17 +681,25 @@ def apply_cursor(settings):
     if not isinstance(theme, str) or not re.match(r"^[A-Za-z0-9 ._+-]+\Z", theme):
         return                                         # never put anything but a plain theme name into config files
     size = max(8, min(256, int(cfg.get("size", CURSOR_DEFAULT_SIZE))))
-    _write_if_changed(os.path.expanduser("~/.icons/default/index.theme"),
-                      "[Icon Theme]\nName=Default\nComment=Default cursor theme\nInherits=%s\n" % theme)
-    gtk = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "gtk-3.0", "settings.ini")
+    index = "[Icon Theme]\nName=Default\nComment=Default cursor theme\nInherits=%s\n" % theme
+    _write_if_changed(os.path.expanduser("~/.icons/default/index.theme"), index)
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    _write_if_changed(os.path.join(data_home, "icons", "default", "index.theme"), index)
+    _edit_ini(os.path.join(_CFG_HOME, "gtk-3.0", "settings.ini"), theme, size)
+    _edit_ini(os.path.join(_CFG_HOME, "gtk-4.0", "settings.ini"), theme, size)       # (GTK 4 apps: Ghostty...)
+    _write_if_changed(XSETTINGSD_CONF, "# written by the i3 settings window (Mouse > Mouse cursor)\n"
+                                       "Gtk/CursorThemeName \"%s\"\nGtk/CursorThemeSize %d\n" % (theme, size))
+    # XCURSOR_* for the next login (display managers read ~/.xprofile; systemd sessions environment.d)
+    xprofile = os.path.expanduser("~/.xprofile")
     try:
-        with open(gtk) as f:
+        with open(xprofile) as f:
             text = f.read()
-    except OSError:
-        text = "[Settings]\n"
-    text = _set_ini_key(text, "gtk-cursor-theme-name", theme)
-    text = _set_ini_key(text, "gtk-cursor-theme-size", size)
-    _write_if_changed(gtk, text)
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    _write_if_changed(xprofile, _set_block(text, ["export XCURSOR_THEME=%s" % shlex.quote(theme),
+                                                  "export XCURSOR_SIZE=%d" % size]))
+    _write_if_changed(os.path.join(_CFG_HOME, "environment.d", "90-i3dots-cursor.conf"),
+                      "XCURSOR_THEME=%s\nXCURSOR_SIZE=%d\n" % (theme, size))
     if DRY:
         print("+ xrdb -merge  (Xcursor.theme: %s, Xcursor.size: %d)" % (theme, size))
     elif not FILES_ONLY:
@@ -637,6 +709,11 @@ def apply_cursor(settings):
         except (OSError, subprocess.TimeoutExpired):
             pass
     run(["xsetroot", "-cursor_name", "left_ptr"])
+    run(["dbus-update-activation-environment", "--systemd",
+         "XCURSOR_THEME=%s" % theme, "XCURSOR_SIZE=%d" % size])
+    xs = os.path.join(CONFIG_DIR, "scripts", "XSettings.sh")             # open GTK apps follow at once
+    if os.path.exists(xs):
+        run(["bash", xs])
 
 
 # ------------------------------------------------------------------ window opacity (picom)
@@ -1402,7 +1479,7 @@ def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spac
 
     def block(m, bg, fg, lcap=left, lbg=bar_bg, rcap=right, gap=half, ul=None):
         rows[m] = {"bg": bg, "fg": fg, "ul": ul or bg, "l": lcap, "lfg": bg, "lbg": lbg,
-                   "r": rcap, "rfg": bg, "rbg": bar_bg, "gap": gap}
+                   "r": rcap, "rfg": bg, "rbg": bar_bg, "gap": gap, "lead": 0}
 
     def shade_of(i, n):                         # position i of n -> one of the 13 colours from dark to the colour
         k = 1 + (round(12 * i / (n - 1)) if n > 1 else 12)
@@ -1450,6 +1527,10 @@ def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spac
                 block(m, bar_bg, col("foreground"), ul=col("primary"))
             else:
                 block(m, col("block"), col("blockfg"))
+    if style not in BAR_JOINED and items:
+        # the last block (the power button) sits right at the screen edge: its space goes only on its left side
+        last = rows[items[-1]]
+        last["lead"], last["gap"] = last["gap"], 0
     for m in ("playerctl",) + BAR_ITEMS:        # items that are not shown still need values
         if m not in rows:
             block(m, col("block"), col("blockfg"))
@@ -1497,6 +1578,8 @@ def bar_style_ini(settings):
     def value(k, v):
         if k == "gap":
             return "%dpx" % v                       # spacing in pixels (a bare number would mean spaces)
+        if k == "lead":
+            return "%d" % v                         # polybar's format-offset: pixels, room on the left only
         return '" "' if v == " " else v              # (a value that is a space is quoted, or polybar would drop it)
     out = ["; How the bar's blocks look (Settings > Appearance > Bar style). Written by the settings window each time",
            "; the bar starts, so edits here are replaced: change colours in colors.ini, or blocks.ini for the layout.",
@@ -1607,14 +1690,14 @@ def paint_bar(cr, width, style, divider, accent, size="large", items=None, title
             x += tw + extra["gap"]
             continue
         r = rows[m]
-        x += r["gap"]
+        x += r["lead"] + r["gap"]
         start = x
         if r["l"]:
             parts.append(("cap", x, cap_w, r["l"], r["lfg"], r["lbg"]))
             x += cap_w
         inner = measure(txt, px)[0]                              # (the spaces around it are in the text font)
         tw = inner + 2 * space
-        joined = r["gap"] == 0                                   # touches the items next to it
+        joined = r["gap"] == 0 and not r["lead"]                 # touches the items next to it
         parts.append(("box", x, tw, r["bg"], bool(r["l"]) or joined, bool(r["r"]) or joined))
         parts.append(("text", x + space, inner, txt, px, r["fg"], None))
         x += tw
@@ -1624,7 +1707,8 @@ def paint_bar(cr, width, style, divider, accent, size="large", items=None, title
         if extra["line"]:
             parts.append(("line", start, x - start, r["ul"]))
         x += r["gap"]
-    right_w = x + (0 if thumb else 2 * space)                     # the bar's right padding
+    right_w = x + (space if style == "flat" and not thumb else 0)  # (the block bar has no right padding: the power
+                                                                   # button reaches the screen edge)
 
     # the left-hand side: workspaces (and the window title)
     left, lx = [], 0
@@ -2694,28 +2778,31 @@ def launch_gui(confirm=True, tab=None):
     ct.get_style_context().add_class("title")
     mp.pack_start(ct, False, False, 0)
     cur_saved = settings.get("cursor", {})
+    cur_now_theme, cur_now_size = current_cursor()          # what the desktop uses now (nothing saved yet)
     themes = list_cursor_themes()
     if cur_saved.get("theme") and cur_saved["theme"] not in themes:
         themes.append(cur_saved["theme"])
     cur_combo = Gtk.ComboBoxText()
     for th in themes:
         cur_combo.append(th, th)
-    cur_combo.set_active_id(cur_saved.get("theme") or ("Adwaita" if "Adwaita" in themes else None))
+    cur_combo.set_active_id(cur_saved.get("theme") or (cur_now_theme if cur_now_theme in themes else None)
+                            or ("Adwaita" if "Adwaita" in themes else None))
     if cur_combo.get_active_id() is None and themes:
         cur_combo.set_active(0)
     mp.pack_start(row("Cursor theme", cur_combo), False, False, 0)
     cur_size = Gtk.ComboBoxText()
     for sz in CURSOR_SIZES:
         cur_size.append(str(sz), "%d px%s" % (sz, "  (default)" if sz == CURSOR_DEFAULT_SIZE else ""))
-    cur_size.set_active_id(str(cur_saved.get("size", CURSOR_DEFAULT_SIZE)))
+    cur_size.set_active_id(str(cur_saved.get("size", cur_now_size)))
     if cur_size.get_active_id() is None:
         cur_size.set_active_id(str(CURSOR_DEFAULT_SIZE))
     mp.pack_start(row("Cursor size", cur_size), False, False, 0)
     cur_prev = Gtk.Image()
     cur_prev.set_halign(Gtk.Align.START)
     mp.pack_start(row("Preview", cur_prev), False, False, 0)
-    mp.pack_start(dim("Applies to newly opened programs; apps that are already open keep their old cursor "
-                      "until you restart them. More themes: install a cursor theme (for example "
+    mp.pack_start(dim("Used by every program, so the pointer looks the same over every window. Open GTK apps "
+                      "switch at once; other programs that are already open when you restart them (Qt and Electron "
+                      "apps from your next login). More themes: install a cursor theme (for example "
                       "'bibata-cursor-theme' where your distro has it) or put one in ~/.icons."), False, False, 0)
     if not themes:
         mp.pack_start(dim("No cursor themes were found in /usr/share/icons or ~/.icons."), False, False, 0)
@@ -2724,8 +2811,9 @@ def launch_gui(confirm=True, tab=None):
         theme, size = cur_combo.get_active_id(), cur_size.get_active_id()
         if not theme or not size:
             return
+        st = Gtk.Settings.get_default()
+        old = (st.get_property("gtk-cursor-theme-name"), st.get_property("gtk-cursor-theme-size"))
         try:
-            st = Gtk.Settings.get_default()
             st.set_property("gtk-cursor-theme-name", theme)
             st.set_property("gtk-cursor-theme-size", int(size))
             cur = Gdk.Cursor.new_from_name(Gdk.Display.get_default(), "left_ptr")
@@ -2734,6 +2822,14 @@ def launch_gui(confirm=True, tab=None):
                 cur_prev.set_from_pixbuf(pb)
         except Exception:  # noqa: BLE001 - the preview is optional
             pass
+        finally:
+            # only the picture changes: the settings window's own cursor stays the one the rest of the desktop
+            # uses (it used to switch to the previewed size, so the pointer grew while this window was open)
+            try:
+                st.set_property("gtk-cursor-theme-name", old[0])
+                st.set_property("gtk-cursor-theme-size", old[1])
+            except Exception:  # noqa: BLE001
+                pass
 
     cur_combo.connect("changed", cursor_preview)
     cur_size.connect("changed", cursor_preview)

@@ -31,6 +31,8 @@ out = ["; The bar for every style except Flat (Settings > Appearance > Bar style
        "[bar/blocks]",
        "inherit = bar/main",
        "module-margin = 0",
+       "; the power button's block reaches the screen edge, like the workspace block on the left",
+       "padding-right = 0",
        "font-2 = ${env:BAR_CAP_SPEC:FantasqueSansM Nerd Font Mono:size=27.277;5}",
        "modules-right = ${env:BAR_RIGHT_B:" + " ".join("b-" + m for m, _f, _e in mods if m != "playerctl") + "}",
        ""]
@@ -52,7 +54,8 @@ for m, fmts, extra in mods:
                 "%s-suffix-font = 3" % name,
                 "%s-suffix-foreground = %s" % (name, k % "rfg"),
                 "%s-suffix-background = %s" % (name, k % "rbg"),
-                "%s-margin = %s" % (name, k % "gap")]
+                "%s-margin = %s" % (name, k % "gap"),
+                "%s-offset = %s" % (name, k % "lead")]
     for k, v in extra.items():
         out.append("%s = %s" % (k, fg if v == "fg" else v))
     out.append("")
