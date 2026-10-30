@@ -1258,10 +1258,22 @@ BAR_SHAPED = ("solid", "gradient", "sunset", "alternate", "duo", "dark", "charco
               "powerline")
 BAR_JOINED = ("pill", "darkpill", "powerline")      # blocks joined into one: no space between them
 BAR_STYLE_ALIASES = {"blocks": "solid"}          # older settings: the first block style
-BAR_DIVIDERS = [("rounded", "Rounded"), ("arrows", "Arrows"), ("slanted", "Slanted"), ("square", "Square")]
-# the Nerd Font powerline glyphs drawn at the left / right end of a block
-BAR_CAPS = {"rounded": ("", ""), "arrows": ("", ""), "slanted": ("", ""),
-            "square": ("", "")}
+BAR_DIVIDERS = [("rounded", "Rounded"), ("arrows", "Arrows"), ("slanted", "Slanted"), ("square", "Square"),
+                ("backslant", "Backslant"), ("tab", "Tab - wider at the bottom"), ("hanging", "Hanging - wider at the top"),
+                ("tag", "Tag - flat start, pointed end"), ("flag", "Flag - pointed start, flat end"),
+                ("bullet", "Bullet - flat start, round end"), ("leaf", "Leaf - round start, pointed end"),
+                ("wing", "Wing - slanted start, round end")]
+# the Nerd Font powerline glyphs drawn at the left / right end of a block ("" = a flat end). All of them are as tall
+# as the bar (2168 font units) and 1060 wide, which is what BAR_SIZES below is measured for.
+CAP_ROUND_L, CAP_ROUND_R = "\ue0b6", "\ue0b4"            # half circles
+CAP_ARROW_L, CAP_ARROW_R = "\ue0b2", "\ue0b0"            # points
+CAP_LOWR, CAP_UPL = "\ue0ba", "\ue0bc"                   # lower-right / upper-left triangles ("/" ends)
+CAP_UPR, CAP_LOWL = "\ue0be", "\ue0b8"                   # upper-right / lower-left triangles ("\\" ends)
+BAR_CAPS = {"rounded": (CAP_ROUND_L, CAP_ROUND_R), "arrows": (CAP_ARROW_L, CAP_ARROW_R),
+            "slanted": (CAP_LOWR, CAP_UPL), "square": ("", ""),
+            "backslant": (CAP_UPR, CAP_LOWL), "tab": (CAP_LOWR, CAP_LOWL), "hanging": (CAP_UPR, CAP_UPL),
+            "tag": ("", CAP_ARROW_R), "flag": (CAP_ARROW_L, ""), "bullet": ("", CAP_ROUND_R),
+            "leaf": (CAP_ROUND_L, CAP_ARROW_R), "wing": (CAP_LOWR, CAP_ROUND_R)}
 # Each size, measured on polybar 3.7 so that everything lands on whole pixels:
 #   height  the bar in px (plus its 1 px line)
 #   text    (size in px, vertical offset that centres it); icon: the same for the bigger icons (mug, power)
@@ -1682,7 +1694,8 @@ def paint_bar(cr, width, style, divider, accent, size="large", items=None, title
                 PangoCairo.show_layout(cr, layout)
             elif kind == "cap":
                 cw, glyph = p[2], p[3]
-                if glyph not in ("", "", "", "", "", ""):
+                if glyph not in (CAP_ROUND_L, CAP_ROUND_R, CAP_ARROW_L, CAP_ARROW_R, CAP_LOWR, CAP_UPL, CAP_UPR,
+                                 CAP_LOWL):
                     continue                                       # " ": just room, in the colour behind it
                 cr.save()
                 cr.rectangle(px0 - 1, top, cw + 2, h)              # the glyph is cut off at the bar's edges
@@ -1691,34 +1704,43 @@ def paint_bar(cr, width, style, divider, accent, size="large", items=None, title
                 # (the glyph overlaps its block by a hair, so no seam shows between them)
                 ym = top + h / 2
                 y1, y2 = ym - cap_ry, ym + cap_ry
-                if glyph == "":                              # rounded, left end
+                x0, x1 = px0 - 0.5, px0 + cw + 0.5                 # the glyph's left and right edge (with the overlap)
+                if glyph == CAP_ROUND_L:
                     cr.rectangle(px0 + cw - 0.5, top, 1, h)
                     cr.fill()
                     cr.translate(px0 + cw, ym)
                     cr.scale(cw, cap_ry)
                     cr.arc(0, 0, 1, 0.5 * math.pi, 1.5 * math.pi)
-                elif glyph == "":                            # rounded, right end
+                elif glyph == CAP_ROUND_R:
                     cr.rectangle(px0 - 0.5, top, 1, h)
                     cr.fill()
                     cr.translate(px0, ym)
                     cr.scale(cw, cap_ry)
                     cr.arc(0, 0, 1, -0.5 * math.pi, 0.5 * math.pi)
-                elif glyph == "":                            # arrow pointing left
-                    cr.move_to(px0 + cw + 0.5, y1)
-                    cr.line_to(px0 + cw + 0.5, y2)
+                elif glyph == CAP_ARROW_L:                         # points left
+                    cr.move_to(x1, y1)
+                    cr.line_to(x1, y2)
                     cr.line_to(px0, ym)
-                elif glyph == "":                            # arrow pointing right
-                    cr.move_to(px0 - 0.5, y1)
-                    cr.line_to(px0 - 0.5, y2)
+                elif glyph == CAP_ARROW_R:                         # points right
+                    cr.move_to(x0, y1)
+                    cr.line_to(x0, y2)
                     cr.line_to(px0 + cw, ym)
-                elif glyph == "":                            # slanted, left end
-                    cr.move_to(px0 + cw + 0.5, y1)
-                    cr.line_to(px0 + cw + 0.5, y2)
+                elif glyph == CAP_LOWR:                            # "/" left end
+                    cr.move_to(x1, y1)
+                    cr.line_to(x1, y2)
                     cr.line_to(px0, y2)
-                else:                                              # slanted, right end
-                    cr.move_to(px0 - 0.5, y1)
+                elif glyph == CAP_UPL:                             # "/" right end
+                    cr.move_to(x0, y1)
                     cr.line_to(px0 + cw, y1)
-                    cr.line_to(px0 - 0.5, y2)
+                    cr.line_to(x0, y2)
+                elif glyph == CAP_UPR:                             # "\\" left end
+                    cr.move_to(px0, y1)
+                    cr.line_to(x1, y1)
+                    cr.line_to(x1, y2)
+                else:                                              # CAP_LOWL: "\\" right end
+                    cr.move_to(x0, y1)
+                    cr.line_to(x0, y2)
+                    cr.line_to(px0 + cw, y2)
                 cr.close_path()
                 cr.fill()
                 cr.restore()
