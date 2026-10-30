@@ -21,8 +21,9 @@ off() {
   rm -f "${XDG_RUNTIME_DIR:-/tmp}/i3dots-caffeine"
 }
 case "$1" in
-  toggle) if is_on; then off; notify-send -u low "Stay awake" "off - the screen can sleep again" 2>/dev/null
-          else on; notify-send -u low "Stay awake" "on - the screen will not sleep or lock" 2>/dev/null; fi ;;
+  toggle) icon="${XDG_CONFIG_HOME:-$HOME/.config}/i3/icons/coffee.png"
+          if is_on; then off; notify-send -u low -i "$icon" "Stay awake" "off - the screen can sleep again" 2>/dev/null
+          else on; notify-send -u low -i "$icon" "Stay awake" "on - the screen will not sleep or lock" 2>/dev/null; fi ;;
   on)  on ;;
   off) off ;;
   status)

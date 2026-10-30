@@ -18,12 +18,12 @@ workspace_layout default
 # new windows never open as tabs; with spiral tiling on (AutoTiling.py) they split the focused window like Hyprland
 
 # ---- look: monochrome (starterpack-style gaps/borders, black & white) -----------
+# every window, tiled or floating, gets the same border: the focused one is drawn in the accent colour (the "ring")
 default_border pixel 3
-# floating windows get a slim title bar
-default_floating_border normal 2
+default_floating_border pixel 3
 title_align center
-# lone window: no border
-hide_edge_borders smart
+# (no "hide_edge_borders": even a window that is alone on the screen keeps its ring, so every app shows it)
+hide_edge_borders none
 gaps inner 5
 gaps outer 0
 # lone window: no gaps either
@@ -378,6 +378,11 @@ bindsym XF86RFKill exec --no-startup-id $scripts/AirplaneMode.sh
 bindsym XF86Sleep exec --no-startup-id systemctl suspend
 
 # ---- window rules (ported from lua/window_rules.lua) -------------------------
+# Apps that draw their own title bar (Firefox, Chrome, VS Code, Discord, Spotify, GNOME apps...) ask for no border,
+# so i3 would skip the focus ring on them. Give every window the border; the rules below can still change it.
+# (Some ask again after they have opened; AutoTiling.py puts the border back then. To hide a window's border on
+# purpose, use "border pixel 0" like the mpv rule below - "border none" would be undone.)
+for_window [all] border pixel 3
 for_window [window_role="(pop-up|dialog|task_dialog|About)"] floating enable
 for_window [window_type="dialog"] floating enable
 for_window [window_type="utility"] floating enable
@@ -429,6 +434,8 @@ exec_always --no-startup-id ~/.config/polybar/launch.sh
 exec_always --no-startup-id ~/.config/i3/scripts/AutoTiling.py
 # touchpad: swipe with three fingers to go to the next / previous workspace (Touchégg; Settings > Mouse & touchpad)
 exec_always --no-startup-id ~/.config/i3/scripts/Gestures.sh
+# a mouse or touchpad plugged in later (or a Bluetooth mouse reconnecting) gets your Settings > Mouse choices too
+exec_always --no-startup-id ~/.config/i3/scripts/InputWatch.py
 
 # ---- used by the settings window while it records a new key (leaves with XF86Launch9) ----
 mode "keycapture" {

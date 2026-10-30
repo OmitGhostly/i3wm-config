@@ -64,17 +64,7 @@ read_state() {
 }
 
 select_icon() {
-    if (( percent <= 20 )); then
-        icon="$iDIR/brightness-20.png"
-    elif (( percent <= 40 )); then
-        icon="$iDIR/brightness-40.png"
-    elif (( percent <= 60 )); then
-        icon="$iDIR/brightness-60.png"
-    elif (( percent <= 80 )); then
-        icon="$iDIR/brightness-80.png"
-    else
-        icon="$iDIR/brightness-100.png"
-    fi
+    icon="$iDIR/keyboard.png"
 }
 
 notify_state() {

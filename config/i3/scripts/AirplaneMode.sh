@@ -7,7 +7,7 @@
 # ==================================================
 # Airplane Mode. Turning on or off all wifi using rfkill. 
 
-notif="${XDG_CONFIG_HOME:-$HOME/.config}/i3/images/ja.png"
+notif="${XDG_CONFIG_HOME:-$HOME/.config}/i3/icons/airplane.png"
 
 # Check if any wireless device is blocked
 wifi_blocked=$(rfkill list wifi | grep -o "Soft blocked: yes")

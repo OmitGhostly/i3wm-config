@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One polybar per chosen monitor; tray on the primary monitor (or the first chosen one).
+# One polybar per chosen monitor; the system tray (a module, first in the right-hand list) on the primary monitor
+# (or the first chosen one).
 # Position (top/bottom) and monitor choice come from the settings window (~/.config/i3/settings.json).
 exec 9>"${XDG_RUNTIME_DIR:-/tmp}/polybar-launch.lock"
 flock 9   # one launch at a time (the settings window and i3 may both ask)
@@ -45,6 +46,6 @@ read -r first _ <<<"$sel"
 traymon=$first
 [ -n "$primary" ] && case " $sel " in *" $primary "*) traymon=$primary ;; esac
 for m in $sel; do
-  if [ "$m" = "$traymon" ]; then tray=right; else tray=none; fi
-  MONITOR=$m TRAY_POSITION=$tray polybar --reload "$BAR_NAME" >"${XDG_RUNTIME_DIR:-$HOME/.cache}/polybar-$m.log" 2>&1 9>&- &
+  if [ "$m" = "$traymon" ]; then right="tray $BAR_RIGHT"; right_b="tray $BAR_RIGHT_B"; else right=$BAR_RIGHT; right_b=$BAR_RIGHT_B; fi
+  MONITOR=$m BAR_RIGHT="$right" BAR_RIGHT_B="$right_b" polybar --reload "$BAR_NAME" >"${XDG_RUNTIME_DIR:-$HOME/.cache}/polybar-$m.log" 2>&1 9>&- &
 done

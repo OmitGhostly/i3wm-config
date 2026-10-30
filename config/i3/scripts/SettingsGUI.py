@@ -8,6 +8,7 @@ keybindings, sound, Bluetooth and Wi-Fi.
                             (used by polybar/launch.sh)
   SettingsGUI.py --apply    apply the saved settings (run at every i3 start, no GTK needed)
   SettingsGUI.py --refresh-files  write the saved settings into the config files only (used by install.sh)
+  SettingsGUI.py --apply-mouse    apply only the mouse / touchpad settings (used by InputWatch.py)
   SettingsGUI.py --gestures print "on" or "off": are the touchpad swipe gestures switched on (used by Gestures.sh)
   SettingsGUI.py --wifi-icon  print "on" or "off": show the Wi-Fi applet's tray icon (used by NetApplet.sh)
   SettingsGUI.py --dry-run  with --apply: print the commands instead of running them
@@ -100,8 +101,7 @@ def sanitize_settings(data):
         out = {}
         for name, c in m.items():
             if isinstance(name, str) and isinstance(c, dict):
-                sp = _num(c.get("speed", 0.0), -1.0, 1.0, float)
-                out[name] = {"speed": 0.0 if sp is None else sp, "accel": bool(c.get("accel", True))}
+                out[name] = mouse_config(c)
         return out
 
     def monitors(m):
@@ -235,34 +235,132 @@ def save_settings(data):
 
 
 # ------------------------------------------------------------------ mouse
-def list_pointer_devices():
-    """Names of devices that expose libinput acceleration (mice, touchpads, trackballs)."""
-    names = []
-    for line in query(["xinput", "list", "--name-only"]).splitlines():
-        name = line.strip().lstrip("↳ ").strip()
-        if not name or name.startswith("Virtual core") or name in names:
+XINPUT_DEVICE_RE = re.compile(r"^[\s\u23a1\u23a2\u23a3\u239c\u21b3~]*(.+?)\s+id=(\d+)\s+\[slave\s+pointer")
+
+
+def xinput_props(dev):
+    """{property: [values]} of one xinput device (an id)."""
+    props = {}
+    for line in query(["xinput", "list-props", dev]).splitlines():
+        m = re.match(r"^\s+(.+?) \(\d+\):\s*(.*)$", line)
+        if m:
+            props[m.group(1)] = [v.strip() for v in m.group(2).split(",")]
+    return props
+
+
+def list_pointers():
+    """[(id, name, properties)] of the mice, touchpads and trackballs that have libinput acceleration settings.
+    By id, not name: a wireless receiver often shows up as a keyboard and a mouse with the same name, and xinput
+    refuses a name that matches two devices."""
+    out = []
+    for line in query(["xinput", "list", "--short"]).splitlines():
+        m = XINPUT_DEVICE_RE.match(line)
+        if not m or m.group(1).startswith("Virtual core") or "XTEST" in m.group(1):
             continue
-        props = query(["xinput", "list-props", name])
+        props = xinput_props(m.group(2))
         if "libinput Accel Speed" in props:
+            out.append((m.group(2), m.group(1), props))
+    return out
+
+
+def list_pointer_devices():
+    """Names of the mice and touchpads (each name once), for the settings window."""
+    names = []
+    for _dev, name, _props in list_pointers():
+        if name not in names:
             names.append(name)
     return names
 
 
-def apply_mouse_device(name, speed, accel):
+def mouse_config(c):
+    """One saved mouse setting, cleaned up: {"accel": bool, "speed_on": s, "speed_off": s, "speed": s of the current mode}.
+    The same number means two different things: with acceleration ON, libinput's speed reshapes the acceleration
+    curve (how soon and how far it speeds up); with it OFF it multiplies every movement by one fixed amount. So each
+    mode keeps its own speed, and switching acceleration brings back the feel you set for that mode. (A file from an
+    older version has one "speed": that becomes the speed of the mode it was saved with.)"""
+    accel = bool(c.get("accel", True))
+
+    def one(key):
+        v = _num(c.get(key), -1.0, 1.0, float)
+        return None if v is None else round(v, 2)
+    old = one("speed")
+    on, off = one("speed_on"), one("speed_off")
+    if on is None:
+        on = old if (old is not None and accel) else 0.0
+    if off is None:
+        off = old if (old is not None and not accel) else 0.0
+    return {"accel": accel, "speed_on": on, "speed_off": off, "speed": on if accel else off}
+
+
+def apply_mouse_device(dev, speed, accel, props):
+    """Acceleration on/off, then speed, for one device (an xinput id). Profile first: a profile change must not undo
+    the speed. Off = the "flat" profile (speed still works: it scales the pointer evenly). Reads the device back
+    and tries once more when the driver did not take a value; returns what the device reports (mouse_report)."""
     speed = max(-1.0, min(1.0, speed)) if speed == speed else 0.0      # libinput range; NaN -> default
-    run(["xinput", "set-prop", name, "libinput Accel Speed", "%.2f" % speed])
-    # profiles: (adaptive, flat). Acceleration off = flat.
-    prof = ("1", "0") if accel else ("0", "1")
-    run(["xinput", "set-prop", name, "libinput Accel Profile Enabled", prof[0], prof[1]])
+    cur = props.get("libinput Accel Profile Enabled")
+    avail = props.get("libinput Accel Profiles Available") or ["1", "1"]
+    can_flat = avail[1:2] == ["1"]
+    if cur and len(cur) >= 2 and (accel or can_flat):
+        # (adaptive, flat) - or (adaptive, flat, custom) on xf86-input-libinput 1.3 and newer, which refuses a list
+        # of the wrong length: sending two values there silently left acceleration on
+        want = ["1", "0"] if accel else ["0", "1"]
+        want = want + ["0"] * (len(cur) - 2)
+    else:
+        want = None
+    for attempt in (1, 2):
+        if want:
+            run(["xinput", "set-prop", dev, "libinput Accel Profile Enabled"] + want)
+        run(["xinput", "set-prop", dev, "libinput Accel Speed", "%.2f" % speed])
+        if DRY or FILES_ONLY:
+            return None
+        now = xinput_props(dev)
+        report = mouse_report(now)
+        if report["speed"] is not None and abs(report["speed"] - round(speed, 2)) < 0.006 \
+                and (want is None or report["accel"] == accel):
+            return report
+    return report
+
+
+def mouse_report(props):
+    """What a device says it is doing: {"accel": bool or None, "speed": float or None, "can_turn_off": bool}."""
+    cur = props.get("libinput Accel Profile Enabled") or []
+    avail = props.get("libinput Accel Profiles Available") or []
+    try:
+        speed = float((props.get("libinput Accel Speed") or [""])[0])
+    except ValueError:
+        speed = None
+    return {"accel": (cur[0] == "1") if cur else None, "speed": speed,
+            "can_turn_off": avail[1:2] == ["1"] if avail else bool(cur)}
+
+
+def mouse_choice(settings, name):
+    """The saved (speed, acceleration) for a device: its own setting, else the one for all devices, else None."""
+    mouse = settings.get("mouse") if isinstance(settings.get("mouse"), dict) else {}
+    cfg = mouse.get(name) or mouse.get(ALL)
+    if not isinstance(cfg, dict):
+        return None
+    cfg = mouse_config(cfg)
+    return cfg["speed"], cfg["accel"]
 
 
 def apply_mouse(settings):
-    mouse = settings.get("mouse", {})
-    base = mouse.get(ALL)
-    for name in list_pointer_devices():
-        cfg = mouse.get(name, base)
-        if cfg:
-            apply_mouse_device(name, float(cfg.get("speed", 0.0)), bool(cfg.get("accel", True)))
+    for dev, name, props in list_pointers():
+        choice = mouse_choice(settings, name)
+        if choice:
+            apply_mouse_device(dev, choice[0], choice[1], props)
+
+
+def mouse_status():
+    """One line per pointing device: what the driver is really doing right now (shown under the sliders)."""
+    lines = []
+    for _dev, name, props in list_pointers():
+        r = mouse_report(props)
+        if r["speed"] is None:
+            continue
+        mode = {True: "acceleration on", False: "acceleration off", None: "acceleration unknown"}[r["accel"]]
+        extra = "" if r["can_turn_off"] or r["accel"] is False else "  (this device cannot turn acceleration off)"
+        lines.append("%s: %s, speed %+.2f%s" % (name, mode, r["speed"], extra))
+    return lines
 
 
 # ------------------------------------------------------------------ monitors
@@ -937,14 +1035,17 @@ def _dunst_colors(c):
     background = "#000000f2"
     foreground = "%(S)s"
     frame_color = "#303030"
+    highlight = "%(A)s"
 [urgency_normal]
     background = "#000000f2"
     foreground = "#ffffff"
     frame_color = "%(A)s"
+    highlight = "%(A)s"
 [urgency_critical]
     background = "%(A)s"
     foreground = "#000000"
     frame_color = "%(A)s"
+    highlight = "#000000"
 """ % c
 
 
@@ -1140,13 +1241,22 @@ BAR_SPACING_MAX = 40          # px between two blocks (even numbers: half of it 
 # monitors None = every monitor
 BAR_STYLES = [("solid", "One colour - every item in its own block"),
               ("gradient", "Gradient - blocks from dark to your colour"),
+              ("sunset", "Sunset - blocks from your colour to dark"),
               ("alternate", "Alternating - blocks in two shades"),
+              ("duo", "Two-tone - your colour and charcoal, taking turns"),
               ("dark", "Dark - dark blocks, text in your colour"),
+              ("charcoal", "Charcoal - grey blocks, white text"),
+              ("spotlight", "Spotlight - grey blocks, the clock and power in your colour"),
               ("pill", "Pill - every item in one long block"),
+              ("darkpill", "Dark pill - one long dark block, text in your colour"),
               ("powerline", "Powerline - blocks joined in a chain"),
               ("underline", "Underline - text over a line in your colour"),
+              ("glow", "Glow - plain text in your colour"),
               ("flat", "Flat - plain text (the classic look)")]
-BAR_SHAPED = ("solid", "gradient", "alternate", "dark", "pill", "powerline")     # the styles "Block shape" applies to
+# the styles "Block shape" applies to (the ones made of blocks)
+BAR_SHAPED = ("solid", "gradient", "sunset", "alternate", "duo", "dark", "charcoal", "spotlight", "pill", "darkpill",
+              "powerline")
+BAR_JOINED = ("pill", "darkpill", "powerline")      # blocks joined into one: no space between them
 BAR_STYLE_ALIASES = {"blocks": "solid"}          # older settings: the first block style
 BAR_DIVIDERS = [("rounded", "Rounded"), ("arrows", "Arrows"), ("slanted", "Slanted"), ("square", "Square")]
 # the Nerd Font powerline glyphs drawn at the left / right end of a block
@@ -1286,7 +1396,7 @@ def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spac
         k = 1 + (round(12 * i / (n - 1)) if n > 1 else 12)
         return col("seg%d" % k), col("segfg%d" % k)
 
-    if style in ("pill", "powerline"):
+    if style in BAR_JOINED:
         # what is playing comes and goes, so it keeps a block of its own instead of breaking the chain
         if "playerctl" in items:
             block("playerctl", col("block"), col("blockfg"))
@@ -1294,9 +1404,9 @@ def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spac
         prev = bar_bg
         for i, m in enumerate(chain):
             last = i == len(chain) - 1
-            if style == "pill":                 # one block: the ends on the outside, a little room between items
-                bg = col("block")
-                block(m, bg, col("blockfg"), lcap=left if i == 0 else " ", lbg=bar_bg if i == 0 else bg,
+            if style in ("pill", "darkpill"):   # one block: the ends on the outside, a little room between items
+                bg, fg = (col("block"), col("blockfg")) if style == "pill" else (col("dark"), col("darkfg"))
+                block(m, bg, fg, lcap=left if i == 0 else " ", lbg=bar_bg if i == 0 else bg,
                       rcap=right if last else "", gap=0)
             else:                               # each block's left end cuts into the block before it
                 bg, fg = shade_of(i, len(chain))
@@ -1309,6 +1419,17 @@ def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spac
         for i, m in enumerate(items):
             if style == "gradient":
                 block(m, *shade_of(i, len(items)))
+            elif style == "sunset":
+                block(m, *shade_of(len(items) - 1 - i, len(items)))
+            elif style == "duo":
+                block(m, *((col("block"), col("blockfg")) if i % 2 == 0 else (col("line"), col("foreground"))))
+            elif style == "charcoal":
+                block(m, col("line"), col("foreground"))
+            elif style == "spotlight":
+                block(m, *((col("block"), col("blockfg")) if m in ("date", "powermenu")
+                           else (col("line"), col("foreground"))))
+            elif style == "glow":
+                block(m, bar_bg, col("primary"))
             elif style == "alternate":
                 block(m, *((col("block"), col("blockfg")) if i % 2 == 0 else (col("block2"), col("block2fg"))))
             elif style == "dark":
@@ -1323,7 +1444,7 @@ def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spac
     bar = {"line": 0, "gap": half, "ws-bg": col("primary"), "ws-fg": col("background"), "ws-ul": col("primary")}
     if style == "underline":
         bar.update({"line": 2 if height < 34 else 3, "ws-bg": col("background-alt"), "ws-fg": col("foreground")})
-    elif style == "dark":
+    elif style in ("dark", "darkpill"):
         bar.update({"ws-bg": col("dark"), "ws-fg": col("darkfg")})
     return rows, bar
 
@@ -2494,8 +2615,16 @@ def launch_gui(confirm=True, tab=None):
     accel = Gtk.Switch()
     accel.set_halign(Gtk.Align.START)
     mp.pack_start(row("Mouse acceleration", accel), False, False, 0)
-    mp.pack_start(dim("Acceleration off = a flat 1:1 response (the same hand movement always moves the "
-                      "pointer the same distance). Speed goes from -1 (slowest) to +1 (fastest)."), False, False, 0)
+    mp.pack_start(dim("Speed goes from -1 (slowest) to +1 (fastest). Acceleration ON: the pointer speeds up the "
+                      "faster you move your hand, and the slider sets how soon and how far it speeds up. "
+                      "Acceleration OFF: a flat response - the same hand movement always moves the pointer the same "
+                      "distance, and the slider is a plain multiplier. The two settings each remember their own "
+                      "speed, so switching acceleration brings back the speed you chose for it. Changes take effect "
+                      "right away. 'All mice and touchpads' sets every device; pick one device to give it its own "
+                      "settings. A mouse that is plugged in or reconnects later (Bluetooth) gets them too."),
+                  False, False, 0)
+    mouse_state = dim("")
+    mp.pack_start(row("Right now", mouse_state), False, False, 0)
     if not devices:
         mp.pack_start(dim("No mouse or touchpad with libinput settings was found. "
                           "Settings will still be saved and applied the next time a device is detected."), False, False, 0)
@@ -2582,23 +2711,74 @@ def launch_gui(confirm=True, tab=None):
 
     loading = {"v": False}
 
+    def device_cfg(dev):
+        """The (cleaned) setting a device starts from: its own, else the one for all devices, else the defaults."""
+        return mouse_config(settings["mouse"].get(dev) or settings["mouse"].get(ALL) or {})
+
     def load_device(*_):
         loading["v"] = True
-        cfg = settings["mouse"].get(dev_combo.get_active_id()) or settings["mouse"].get(ALL) or {}
-        speed.set_value(float(cfg.get("speed", 0.0)))
-        accel.set_active(bool(cfg.get("accel", True)))
+        cfg = device_cfg(dev_combo.get_active_id())
+        accel.set_active(cfg["accel"])
+        speed.set_value(cfg["speed"])
         loading["v"] = False
 
-    def store_device(*_):
+    def show_state(*_):
+        lines = []
+        try:
+            lines = mouse_status()
+        except Exception:  # noqa: BLE001 - only a readout
+            pass
+        mouse_state.set_text("\n".join(lines) if lines else "(no mouse or touchpad with libinput settings found)")
+
+    mouse_live = {"id": 0}
+    mouse_saved = {"v": json.loads(json.dumps(settings["mouse"]))}   # what Apply last saved
+
+    def mouse_revert(*_):
+        """Closing without Apply puts the mouse back the way it was saved (the slider changed it live)."""
+        if settings["mouse"] != mouse_saved["v"]:
+            try:
+                apply_mouse({"mouse": mouse_saved["v"]})
+            except Exception:  # noqa: BLE001 - closing must always work
+                pass
+    win.connect("destroy", mouse_revert)
+
+    def store_device(widget=None, *_):
         if loading["v"]:
             return
-        settings["mouse"][dev_combo.get_active_id()] = {"speed": round(speed.get_value(), 2),
-                                                        "accel": accel.get_active()}
+        dev = dev_combo.get_active_id()
+        cfg = device_cfg(dev)
+        if widget is accel:
+            # acceleration flipped: the slider moves to the speed that mode remembers
+            cfg["accel"] = accel.get_active()
+            loading["v"] = True
+            speed.set_value(cfg["speed_on"] if cfg["accel"] else cfg["speed_off"])
+            loading["v"] = False
+        else:
+            cfg["speed_on" if cfg["accel"] else "speed_off"] = round(speed.get_value(), 2)
+        cfg["speed"] = cfg["speed_on"] if cfg["accel"] else cfg["speed_off"]
+        if dev == ALL:
+            settings["mouse"] = {ALL: cfg}          # "all" means every device: drop the ones set one by one
+        else:
+            settings["mouse"][dev] = cfg
+        # feel it right away (a short wait, so dragging the slider does not run xinput for every step)
+        if mouse_live["id"]:
+            GLib.source_remove(mouse_live["id"])
+
+        def live():
+            mouse_live["id"] = 0
+            try:
+                apply_mouse(settings)
+            except Exception as e:  # noqa: BLE001 - a live preview must never break the window
+                print("i3 settings: mouse: %s" % e, file=sys.stderr)
+            show_state()
+            return False
+        mouse_live["id"] = GLib.timeout_add(200, live)
 
     dev_combo.connect("changed", load_device)
     speed.connect("value-changed", store_device)
-    accel.connect("notify::active", store_device)
+    accel.connect("notify::active", lambda *_: store_device(accel))
     load_device()
+    show_state()
     cursor_preview()
 
     # ---------------- monitors tab
@@ -3009,7 +3189,7 @@ def launch_gui(confirm=True, tab=None):
     def refresh_bar_pictures(*_):
         style = bar_style.get_active_id() or BAR_DEFAULT["style"]
         bar_div_row.set_sensitive(style in BAR_SHAPED)
-        bar_space_row.set_sensitive(style not in ("pill", "powerline"))      # those join their blocks up
+        bar_space_row.set_sensitive(style not in BAR_JOINED)      # those join their blocks up
         if not have_cairo:
             return
         try:
@@ -3032,9 +3212,9 @@ def launch_gui(confirm=True, tab=None):
     refresh_bar_pictures()
     ap.pack_start(dim("Every item on the right of the bar (Wi-Fi, Bluetooth, volume, brightness, stay-awake, night light, "
                       "battery, CPU, RAM, GPU, clock, power) can sit in its own block in your accent colour (Colors tab), "
-                      "in a gradient, in two shades, in dark blocks, in one long pill or a powerline chain - or show as "
-                      "plain or underlined text. The shape sets how the ends of the blocks look, the space how far apart "
-                      "they are (Pill and Powerline join them up, so it does not apply there). Items your computer has "
+                      "in a gradient, in two shades, in grey or dark blocks, in one long pill or a powerline chain - or show "
+                      "as plain, glowing or underlined text. The shape sets how the ends of the blocks look, the space "
+                      "how far apart they are (Pill, Dark pill and Powerline join them up, so it does not apply there). Items your computer has "
                       "no hardware for are left out. The window title and the song or video that is playing are hidden "
                       "unless you switch them on above."),
                   False, False, 0)
@@ -4384,6 +4564,7 @@ def launch_gui(confirm=True, tab=None):
         settings["network"] = {"tray_icon": wf_tray.get_active()}
         # the bar (launch.sh) and the gesture / Wi-Fi helpers read settings.json themselves: save it before them
         safe("saving the settings", save_settings, settings)
+        mouse_saved["v"] = json.loads(json.dumps(settings["mouse"]))
         safe("gestures", apply_gestures, settings)
         if wifi_tray_icon(settings) != old_icon:
             safe("Wi-Fi icon", apply_net_applet, settings, restart=True)
@@ -4511,6 +4692,9 @@ def main(argv):
         return 0
     if "--refresh-files" in argv:
         return refresh_files(load_settings())
+    if "--apply-mouse" in argv:                         # for InputWatch.py: a mouse or touchpad was plugged in
+        apply_mouse(load_settings())
+        return 0
     if "--gestures" in argv:                            # for Gestures.sh: are the swipe gestures switched on?
         print("on" if gesture_choice(load_settings())["enabled"] else "off")
         return 0

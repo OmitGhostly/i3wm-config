@@ -9,6 +9,12 @@ side, a tall one top and bottom. Opening windows one after another fills the scr
 
 Tabbed / stacked containers (SUPER+ALT+2/3), floating and fullscreen windows are left alone.
 Turn it on or off with SUPER+ALT+T, or in Settings > Appearance > Window tiling.
+
+It also keeps the focus ring (the border in your accent colour) on every window: apps that draw their own title
+bar - Chrome, Electron apps like VS Code, Discord, Spotify - can tell i3 "no border" after they have opened, which
+i3 obeys and the config's `for_window [all] border pixel 3` cannot catch (i3 does not even announce it, so every
+window is looked at once a second). Such a border is put back. (To really hide
+a window's border, give it `border pixel 0` in the i3 config: that is left alone.)
 Needs nothing but python3: it talks to i3's IPC socket directly.
 
   AutoTiling.py            run (started by the i3 config; only one copy ever runs)
@@ -18,6 +24,7 @@ Needs nothing but python3: it talks to i3's IPC socket directly.
 import fcntl
 import json
 import os
+import select
 import socket
 import struct
 import subprocess
@@ -32,6 +39,9 @@ DEFAULT_MODE = "dwindle"
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "i3")
 SETTINGS = os.environ.get("I3DOTS_SETTINGS") or os.path.join(CONFIG_DIR, "settings.json")
 RECONNECT_FOR = 30                       # seconds to wait for i3 to come back (in-place restart) before exiting
+RING_WIDTH = 3                           # the border width the i3 config gives every window
+RING_RECHECK = (0.4, 1.2, 3.0, 6.0)      # seconds after a window opens to look again (apps drop it a bit later)
+RING_POLL = 1.0                          # seconds between looks at every window (an app can drop it at any time)
 
 
 # ------------------------------------------------------------------ mode (stored in settings.json)
@@ -138,6 +148,31 @@ def find_focused(node, parent=None):
     return None
 
 
+def keep_ring(cmd, con):
+    """Put the border back on a window that asked i3 for none (see the top of this file)."""
+    if not isinstance(con, dict) or not con.get("window") or con.get("border") != "none":
+        return
+    width = con.get("current_border_width")
+    width = width if isinstance(width, int) and 1 <= width <= 20 else RING_WIDTH
+    cmd.request(RUN_COMMAND, "[con_id=%d] border pixel %d" % (con["id"], width))
+
+
+def all_windows(node):
+    """Every window container below `node` (tiled and floating)."""
+    if node.get("window"):
+        yield node
+    for child in node.get("nodes", []) + node.get("floating_nodes", []):
+        yield from all_windows(child)
+
+
+def check_all_rings(cmd):
+    """Look at every window once. An app can change its mind about its title bar at any time (Chrome and Electron
+    when you switch the "system title bar" setting, GTK apps when they are maximised or tiled, a window that
+    finishes loading late) and i3 does not tell anybody when the border goes: only looking finds out."""
+    for con in all_windows(cmd.request(GET_TREE)):
+        keep_ring(cmd, con)
+
+
 def retile(cmd):
     """Set the split direction of the focused window to its longer side (what Hyprland's dwindle does)."""
     if read_mode() != "dwindle":
@@ -180,9 +215,27 @@ def run():
             events.recv()                               # {"success": true}
             last_ok = time.monotonic()
             retile(cmd)
+            later = []                                  # times to look at the windows again (just after one opened)
+            checked = 0.0                               # when every window was last looked at
             while True:
+                now = time.monotonic()
+                if later and min(later) <= now or now - checked >= RING_POLL:
+                    later = [t for t in later if t > now]
+                    check_all_rings(cmd)
+                    checked = last_ok = now
+                wait = min([max(0.0, checked + RING_POLL - now)] + [max(0.0, t - now) for t in later])
+                ready, _, _ = select.select([events.sock], [], [], wait)
+                if not ready:
+                    continue
                 mtype, ev = events.recv()
-                if mtype & EVENT_BIT and isinstance(ev, dict) and ev.get("change") in ("focus", "new", "move", "floating"):
+                if not (mtype & EVENT_BIT and isinstance(ev, dict)):
+                    continue
+                change, con = ev.get("change"), ev.get("container")
+                if change in ("new", "focus", "title", "floating", "move", "fullscreen_mode"):
+                    keep_ring(cmd, con)
+                if change == "new" and isinstance(con, dict) and isinstance(con.get("id"), int):
+                    later += [time.monotonic() + d for d in RING_RECHECK]
+                if change in ("focus", "new", "move", "floating"):
                     retile(cmd)
                     last_ok = time.monotonic()
         except (OSError, ConnectionError, ValueError):
