@@ -2,9 +2,6 @@
 
 ## Quick start
 
-Works from a **KDE or GNOME** desktop (or anything else): the installer adds i3 and Xorg *next to* your current desktop,
-so you keep both and pick one at the login screen. Primary target: **Fedora**; also Arch-based and Debian/Ubuntu-based systems.
-
 ```bash
 git clone https://github.com/OmitGhostly/i3wm-config.git
 cd i3wm-config
@@ -17,23 +14,6 @@ Or without cloning:
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/OmitGhostly/i3wm-config/main/install.sh)
 ```
-
-Then log out and choose the **i3** session (GNOME: gear icon on the login screen; KDE: session menu, bottom-left).
-Press **`SUPER + H`** for the full keybind list. Do not run it with `sudo` - it asks for your password only when installing packages.
-
-
-![mouse](docs/settings-mouse.png)
-![displays](docs/settings-displays.png)
-![dragging a screen](docs/settings-displays-drag.png)
-![appearance](docs/settings-appearance.png)
-![bar style list](docs/settings-bar-styles.png)
-![colors](docs/settings-colors.png)
-
-![themes](docs/settings-themes.png)
-![keybindings](docs/settings-keybinds.png)
-![sound](docs/settings-sound.png)
-![bluetooth](docs/settings-bluetooth.png)
-![wifi](docs/settings-wifi.png)
 
 ## Repository layout
 
