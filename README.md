@@ -1,4 +1,4 @@
-# i3wm-config — monochrome i3 edition
+# i3wm monochrome config
 
 ## Quick start
 
