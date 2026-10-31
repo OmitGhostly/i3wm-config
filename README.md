@@ -1,33 +1,5 @@
 # i3wm-config — monochrome i3 edition
 
-An **i3wm (X11)** port of [LinuxBeginnings/Hyprland-Dots](https://github.com/LinuxBeginnings/Hyprland-Dots).
-Hyprland is a Wayland compositor, so every Wayland-only piece was swapped for an X11 equivalent while keeping
-the keybinds, and restyled as a **simple, sleek black & white** desktop: flat white-on-black polybar with roman-numeral
-workspaces, chunky borders and gaps, monochrome rofi / dunst / kitty / ghostty / cava, four photo wallpapers (or pick any accent colour in Settings > Colors), and a
-**Pokémon fastfetch** greeting in every new **Ghostty** (or kitty) window. Ghostty is the default terminal; kitty is the automatic fallback.
-
-**Design & tools** follow [addy-dclxvi/i3-starterpack](https://github.com/addy-dclxvi/i3-starterpack) (gaps, thick borders, roman workspaces),
-[TheDistroHopper/i3wm-nord](https://github.com/TheDistroHopper/i3wm-nord) and [traumachan7219-collab/i3-dots](https://github.com/traumachan7219-collab/i3-dots)
-(i3 + polybar + picom + rofi + dunst + kitty + feh + i3lock), recolored to pure monochrome. The keybinds follow the original (`SUPER+H` lists them) and can be changed in the Settings window (`SUPER+ALT+M`, Keybindings tab).
-
-![preview](docs/preview.png)
-
-The bar in the default style - every item in its own block in your accent colour (Settings > Appearance > Bar):
-
-![bar](docs/bar-blocks.png)
-
-All fourteen bar styles (each also comes in twelve block shapes, any colour, three sizes and adjustable spacing):
-
-![bar styles](docs/bar-styles.png)
-
-And the twelve block shapes (Settings > Appearance > Bar > Block shape):
-
-![block shapes](docs/bar-shapes.png)
-
-Notifications (volume, brightness, microphone, stay-awake, night light, game mode, touchpad, airplane mode...) use simple white icons, and their level bar follows your accent colour:
-
-![notifications](docs/notifications.png)
-
 ## Quick start
 
 Works from a **KDE or GNOME** desktop (or anything else): the installer adds i3 and Xorg *next to* your current desktop,
