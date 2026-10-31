@@ -220,6 +220,18 @@ install_shell_hook() {
   done
 }
 
+# "asciiquarium" in the terminal: run it see-through (its own background is solid black) - once per rc file
+install_aquarium_alias() {
+  local rc marker='# i3wm-dots: see-through asciiquarium'
+  local line='[ -x "$HOME/.config/i3/scripts/Aquarium.sh" ] && alias asciiquarium="$HOME/.config/i3/scripts/Aquarium.sh"'
+  for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+    [ -f "$rc" ] || continue
+    grep -qF "$marker" "$rc" 2>/dev/null && continue
+    say "making asciiquarium see-through in $rc"
+    [ "$dry" -eq 1 ] || printf '\n%s\n%s\n' "$marker" "$line" >> "$rc"
+  done
+}
+
 # Ghostty is the default terminal. Fedora has no official package (community COPR pgdev/ghostty),
 # Arch has it in the official repos, Debian/Ubuntu have none (kitty is used there).
 install_ghostty() {
@@ -382,6 +394,7 @@ if [ "$dry" -eq 0 ]; then
 fi
 choose_terminal
 install_shell_hook
+install_aquarium_alias
 
 # ---- wallpapers / folders ---------------------------------------------------------
 run mkdir -p "$HOME/Pictures/wallpapers" "$HOME/Pictures/Screenshots"
