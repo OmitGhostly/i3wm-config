@@ -62,6 +62,9 @@ window-theme = dark
 window-height = 32
 window-width = 110
 background-opacity = 0.95
+# text that would be hard to read on its background (prompt blocks, coloured output) is drawn in black or
+# white instead - whichever is clearer (powerline arrows are left alone)
+minimum-contrast = 4.5
 # (blur comes from picom under i3, so no background-blur here)
 # selection colours come from the theme (see the Themes tab in the settings window)
 # i3 draws the window border, so no GTK title bar
