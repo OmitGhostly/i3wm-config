@@ -307,7 +307,7 @@ def apply_mouse_device(dev, speed, accel, props):
         want = want + ["0"] * (len(cur) - 2)
     else:
         want = None
-    for attempt in (1, 2):
+    for _attempt in (1, 2):
         if want:
             run(["xinput", "set-prop", dev, "libinput Accel Profile Enabled"] + want)
         run(["xinput", "set-prop", dev, "libinput Accel Speed", "%.2f" % speed])
@@ -747,7 +747,7 @@ def apply_cursor(settings):
 
 # ------------------------------------------------------------------ window opacity (picom)
 PICOM_CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "picom", "picom.conf")
-OPACITY_DEFAULT = {"active": 100, "inactive": 95, "terminal": 90}
+OPACITY_DEFAULT = {"active": 100, "inactive": 95, "terminal": 95}
 GHOSTTY_CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "ghostty", "config")
 KITTY_CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "kitty", "kitty.conf")
 
@@ -3195,7 +3195,7 @@ def launch_gui(confirm=True, tab=None):
         "active": round(read_value(PICOM_CONF, "active-opacity", 1.0) * 100),
         "inactive": round(read_value(PICOM_CONF, "inactive-opacity", 0.95) * 100)}
     if "terminal" not in op:
-        op = dict(op, terminal=round(read_value(GHOSTTY_CONF, "background-opacity", 0.9) * 100))
+        op = dict(op, terminal=round(read_value(GHOSTTY_CONF, "background-opacity", 0.95) * 100))
 
     def pct_scale(value):
         sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 20, 100, 1)
@@ -3824,13 +3824,6 @@ def launch_gui(confirm=True, tab=None):
         snd["last_user"] = _time.monotonic()
         if snd["timer"] is None:
             snd["timer"] = GLib.timeout_add(90, snd_flush)
-
-    def snd_set(widget_value):
-        snd["loading"] = True
-        try:
-            widget_value()
-        finally:
-            snd["loading"] = False
 
     def build_apps(streams):
         for child in apps_box.get_children():

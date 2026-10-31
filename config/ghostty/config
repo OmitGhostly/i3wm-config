@@ -61,7 +61,7 @@ adjust-cell-height = 10%
 window-theme = dark
 window-height = 32
 window-width = 110
-background-opacity = 0.9
+background-opacity = 0.95
 # (blur comes from picom under i3, so no background-blur here)
 # selection colours come from the theme (see the Themes tab in the settings window)
 # i3 draws the window border, so no GTK title bar

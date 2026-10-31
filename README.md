@@ -189,7 +189,8 @@ Press `SUPER+ALT+M` (or run `~/.config/i3/scripts/SettingsGUI.py`). Changes are 
 │   ├── picom/          compositor: blur, rounded corners, shadows
 │   ├── dunst/          notifications (replaces swaync)
 │   ├── touchegg/       touchpad gestures (three-finger swipe = next / previous workspace)
-│   └── kitty/ ghostty/ wezterm/ starship/ fastfetch/ (Pokémon greeting) btop/ yazi/ cava/ Kvantum/ qt5ct/ qt6ct/ swappy/
+│   ├── gtk-3.0/        dark GTK theme setting
+│   └── ghostty/ kitty/ (28 colour themes) fastfetch/ (Pokémon greeting) cava/ swappy/
 ├── wallpapers/         four photos (night street lights is the first one you see)
 ├── tools/              make_blocks.py (writes config/polybar/blocks.ini, the block bar styles) and
 │                       make_icons.py (draws the white volume, microphone and brightness icons in config/i3/icons)

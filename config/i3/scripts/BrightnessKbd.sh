@@ -75,14 +75,12 @@ notify_state() {
         message="${level_name^}"
         notify-send -e -u low -i "$icon" \
             -h string:x-canonical-private-synchronous:keyboard_backlight \
-            -h boolean:SWAYNC_BYPASS_DND:true \
             "Keyboard backlight" "$message" >/dev/null 2>&1 || true
     else
         message="Level $current of $maximum ($percent%)"
         notify-send -e -u low -i "$icon" \
             -h string:x-canonical-private-synchronous:keyboard_backlight \
             -h "int:value:$percent" \
-            -h boolean:SWAYNC_BYPASS_DND:true \
             "Keyboard backlight" "$message" >/dev/null 2>&1 || true
     fi
 }
