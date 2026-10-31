@@ -26,6 +26,7 @@ Needs nothing but python3: it talks to i3's IPC socket directly.
 import fcntl
 import json
 import os
+import re
 import select
 import socket
 import struct
@@ -34,7 +35,7 @@ import sys
 import time
 
 MAGIC = b"i3-ipc"
-RUN_COMMAND, SUBSCRIBE, GET_TREE = 0, 2, 4
+RUN_COMMAND, GET_WORKSPACES, SUBSCRIBE, GET_TREE, GET_CONFIG = 0, 1, 2, 4, 9
 EVENT_BIT = 1 << 31
 MODES = ("dwindle", "classic")          # dwindle = Hyprland-style spiral, classic = plain i3 (side by side)
 DEFAULT_MODE = "dwindle"
@@ -44,6 +45,7 @@ RECONNECT_FOR = 30                       # seconds to wait for i3 to come back (
 RING_WIDTH = 3                           # the border width the i3 config gives every window
 RING_RECHECK = (0.4, 1.2, 3.0, 6.0)      # seconds after a window opens to look again (apps drop it a bit later)
 RING_POLL = 1.0                          # seconds between looks at every window (an app can drop it at any time)
+WORKSPACE_EVENT = 0                      # i3 IPC event: a workspace was made / focused / renamed ...
 OUTPUT_EVENT = 1                         # i3 IPC event: a screen was plugged in, unplugged or rearranged
 SCREENS_SETTLE = 1.5                     # seconds to wait after the last screen change before redrawing
 
@@ -161,6 +163,39 @@ def keep_ring(cmd, con):
     cmd.request(RUN_COMMAND, "[con_id=%d] border pixel %d" % (con["id"], width))
 
 
+def workspace_names(cmd):
+    """{2: "2:II", ...}: the names the i3 config gives workspaces 1-10 (set $ws2 "2:II")."""
+    cfg = cmd.request(GET_CONFIG)
+    text = cfg.get("config", "") if isinstance(cfg, dict) else ""
+    names = {}
+    for num, name in re.findall(r'^[ \t]*set[ \t]+\$ws(\d+)[ \t]+"?([^"\n]*?)"?[ \t]*$', text, re.M):
+        n = int(num)
+        if 1 <= n <= 10 and re.fullmatch(r'%d(:[^"\\]{1,40})?' % n, name):
+            names[n] = name
+    return names
+
+
+def name_workspaces(cmd):
+    """Give a workspace that is called just "1" (i3 makes one like that for each screen when it starts) its proper
+    name, "1:I" - the bar shows "I" for it, the same as after SUPER+1. Without this the bar looked different right
+    after logging in."""
+    spaces = cmd.request(GET_WORKSPACES)
+    if not isinstance(spaces, list):
+        return
+    taken = {w.get("name") for w in spaces if isinstance(w, dict)}
+    names = None
+    for w in spaces:
+        name = w.get("name") if isinstance(w, dict) else None
+        if not (isinstance(name, str) and name.isdigit()):
+            continue
+        if names is None:
+            names = workspace_names(cmd)
+        want = names.get(int(name))
+        if want and want != name and want not in taken:
+            cmd.request(RUN_COMMAND, 'rename workspace "%s" to "%s"' % (name, want))
+            taken.add(want)
+
+
 def screens_changed():
     """A screen was plugged in, unplugged or moved: draw the wallpaper for the new layout (feh draws it for the
     layout at the moment it runs - a later change leaves it misaligned) and give every screen its bar."""
@@ -228,9 +263,10 @@ def run():
             if not path:
                 raise ConnectionError("i3 is not running")
             events, cmd = IPC(path), IPC(path)
-            events.send(SUBSCRIBE, json.dumps(["window", "output"]))
+            events.send(SUBSCRIBE, json.dumps(["window", "output", "workspace"]))
             events.recv()                               # {"success": true}
             last_ok = time.monotonic()
+            name_workspaces(cmd)
             retile(cmd)
             later = []                                  # times to look at the windows again (just after one opened)
             checked = 0.0                               # when every window was last looked at
@@ -251,6 +287,10 @@ def run():
                     continue
                 mtype, ev = events.recv()
                 if not (mtype & EVENT_BIT and isinstance(ev, dict)):
+                    continue
+                if mtype & ~EVENT_BIT == WORKSPACE_EVENT:
+                    if ev.get("change") == "init":
+                        name_workspaces(cmd)
                     continue
                 if mtype & ~EVENT_BIT == OUTPUT_EVENT:
                     screens_due = time.monotonic() + SCREENS_SETTLE     # (a burst of changes counts as one)

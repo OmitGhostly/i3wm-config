@@ -163,6 +163,12 @@ def sanitize_settings(data):
                 out[k] = c[k]
         if _num(c.get("spacing"), 0, BAR_SPACING_MAX) is not None:
             out["spacing"] = clean_spacing(c["spacing"])
+        if isinstance(c.get("bg_mode"), str) and c["bg_mode"] in dict(BAR_BG_MODES):
+            out["bg_mode"] = c["bg_mode"]
+        if _num(c.get("bg_opacity"), 0, 100) is not None:
+            out["bg_opacity"] = _num(c["bg_opacity"], 0, 100)
+        if norm_accent(c.get("bg_color")):
+            out["bg_color"] = norm_accent(c["bg_color"])
         mons = c.get("monitors")
         if isinstance(mons, list) and mons and all(isinstance(n, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,32}", n) for n in mons):
             out["monitors"] = mons
@@ -1342,7 +1348,11 @@ def apply_gestures(settings):
 
 # ------------------------------------------------------------------ top bar (polybar)
 BAR_DEFAULT = {"position": "top", "monitors": None, "size": "large", "style": "solid", "divider": "rounded",
-               "title": False, "media": False, "spacing": 12}
+               "title": False, "media": False, "spacing": 12,
+               "bg_mode": "solid", "bg_opacity": 70, "bg_color": "#000000"}
+# the bar's own background (the dark part around the blocks - the blocks themselves never change): solid, see-through
+# (bg_opacity, 0-100 %) or blurred (see-through, and picom blurs what is behind it), in any colour (bg_color)
+BAR_BG_MODES = [("solid", "Solid"), ("transparent", "See-through"), ("blur", "Blurred (see-through, frosted)")]
 BAR_SPACING_MAX = 40          # px between two blocks (even numbers: half of it goes on each side of a block)
 # monitors None = every monitor
 BAR_STYLES = [("solid", "One colour - every item in its own block"),
@@ -1415,7 +1425,18 @@ def bar_choice(settings):
             "style": pick("style", dict(BAR_STYLES)), "divider": pick("divider", dict(BAR_DIVIDERS)),
             "title": bar.get("title") is True, "media": bar.get("media") is True,
             "spacing": clean_spacing(bar.get("spacing")),
+            "bg_mode": pick("bg_mode", dict(BAR_BG_MODES)),
+            "bg_opacity": _num(bar.get("bg_opacity"), 0, 100) if _num(bar.get("bg_opacity"), 0, 100) is not None
+            else BAR_DEFAULT["bg_opacity"],
+            "bg_color": norm_accent(bar.get("bg_color")) or BAR_DEFAULT["bg_color"],
             "monitors": [m for m in mons if isinstance(m, str)] if isinstance(mons, list) else []}
+
+
+def bar_bg_value(mode, opacity, color):
+    """The bar's background for polybar: '#AARRGGBB' (solid = fully opaque; see-through and blurred use the slider).
+    Needs the compositor (picom) for the see-through part, like window opacity."""
+    alpha = 255 if mode == "solid" else round(max(0, min(100, opacity)) * 2.55)
+    return "#%02x%s" % (alpha, (norm_accent(color) or "#000000")[1:])
 
 
 def clean_spacing(value):
@@ -1494,7 +1515,7 @@ def bar_colors(accent):
     return c
 
 
-def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spacing"]):
+def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spacing"], bar_bg=None):
     """How each item on the right of the bar looks in a style: block colour (bg), text colour (fg), underline (ul),
     the glyphs at its left / right end (l, r) with their colours, and the space on each side of it (gap, px).
     `spacing` is the room between two blocks (each block gets half of it on either side); joined-up styles have none.
@@ -1502,7 +1523,7 @@ def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spac
     `col(name)` turns a colours.ini name into a value: a reference for polybar, #rrggbb for the preview.
     Returns ({item: {...}}, {bar-wide values: underline size, the flat bar's item spacing, focused workspace})."""
     left, right = BAR_CAPS[divider] if style in BAR_SHAPED else ("", "")
-    bar_bg = col("background")
+    bar_bg = bar_bg or col("background")        # the bar's own background (Settings: solid / see-through / blurred)
     rows = {}
     half = clean_spacing(spacing) // 2
 
@@ -1563,7 +1584,8 @@ def bar_style_rows(style, divider, items, height, col, spacing=BAR_DEFAULT["spac
     for m in ("playerctl",) + BAR_ITEMS:        # items that are not shown still need values
         if m not in rows:
             block(m, col("block"), col("blockfg"))
-    bar = {"line": 0, "gap": half, "ws-bg": col("primary"), "ws-fg": col("background"), "ws-ul": col("primary")}
+    bar = {"line": 0, "gap": half, "ws-bg": col("primary"), "ws-fg": col("background"), "ws-ul": col("primary"),
+           "bg": bar_bg}
     if style == "underline":
         bar.update({"line": 2 if height < 34 else 3, "ws-bg": col("background-alt"), "ws-fg": col("foreground")})
     elif style in ("dark", "darkpill"):
@@ -1602,7 +1624,8 @@ def bar_style_ini(settings):
     def col(name):
         return "${colors.%s}" % name if name in names else values[name]
     rows, bar = bar_style_rows(choice["style"], choice["divider"], bar_items(choice),
-                               BAR_SIZES[choice["size"]]["height"], col, choice["spacing"])
+                               BAR_SIZES[choice["size"]]["height"], col, choice["spacing"],
+                               bar_bg_value(choice["bg_mode"], choice["bg_opacity"], choice["bg_color"]))
 
     def value(k, v):
         if k == "gap":
@@ -1665,7 +1688,7 @@ def _rgba(value):
 
 
 def paint_bar(cr, width, style, divider, accent, size="large", items=None, title=False, bottom=False, thumb=False,
-              spacing=BAR_DEFAULT["spacing"]):
+              spacing=BAR_DEFAULT["spacing"], bar_bg=None, blur=False):
     """Draw the bar as polybar will show it in a style (same colours, block ends and spacing: see bar_style_rows),
     on the cairo context `cr`, `width` pixels wide. thumb=True draws the small dropdown picture instead: a few
     items, no workspaces. Shrinks the drawing to fit when the bar would be wider than `width`."""
@@ -1688,7 +1711,7 @@ def paint_bar(cr, width, style, divider, accent, size="large", items=None, title
             import time
             texts["date"] = time.strftime("%a %d %b  %H:%M")
     h, font_px, icon_px = dims["height"], dims["text"][0], dims["icon"][0]
-    rows, extra = bar_style_rows(style, divider, items, h, lambda n: pal[n], spacing)
+    rows, extra = bar_style_rows(style, divider, items, h, lambda n: pal[n], spacing, None if thumb else bar_bg)
     layout = PangoCairo.create_layout(cr)
 
     def measure(text, px):
@@ -1770,7 +1793,26 @@ def paint_bar(cr, width, style, divider, accent, size="large", items=None, title
         cr.rectangle(0, 0, w, h)
         cr.fill()
     else:
-        cr.set_source_rgba(*_rgba(pal["background"]))
+        bg = _rgba(extra["bg"])
+        if bg[3] < 1:
+            # a see-through bar: show it over a stand-in wallpaper (soft blobs, smoothed when blurred)
+            import cairo
+            g = cairo.LinearGradient(0, 0, w, 0)
+            g.add_color_stop_rgb(0, 0.36, 0.47, 0.60)
+            g.add_color_stop_rgb(0.5, 0.78, 0.82, 0.88)
+            g.add_color_stop_rgb(1, 0.30, 0.38, 0.46)
+            cr.set_source(g)
+            cr.rectangle(0, 0, w, full_h)
+            cr.fill()
+            for i in range(int(w // 90) + 1):
+                cx = i * 90 + 30
+                rg = cairo.RadialGradient(cx, full_h / 2, 1, cx, full_h / 2, 28 if blur else 14)
+                rg.add_color_stop_rgba(0, 0.95, 0.95, 0.95, 0.55 if blur else 0.9)
+                rg.add_color_stop_rgba(1, 0.95, 0.95, 0.95, 0)
+                cr.set_source(rg)
+                cr.rectangle(cx - 30, 0, 60, full_h)
+                cr.fill()
+        cr.set_source_rgba(*bg)
         cr.rectangle(0, 0, w, full_h)
         cr.fill()
         cr.set_source_rgba(*_rgba(pal["line"]))
@@ -1862,8 +1904,42 @@ def paint_bar(cr, width, style, divider, accent, size="large", items=None, title
     cr.restore()
 
 
+BAR_BLUR_EXCLUDES = ("window_type = 'dock'", "class_g = 'Polybar'")     # in picom's blur-background-exclude
+
+
+def apply_bar_blur(settings, restart=True):
+    """Blurred bar background: take the bar out of picom's blur-background-exclude list (so picom blurs what is
+    behind its see-through part); any other mode puts it back. Restarts picom when the file changed."""
+    if not os.path.exists(PICOM_CONF):
+        return
+    blur = bar_choice(settings)["bg_mode"] == "blur"
+    with open(PICOM_CONF) as f:
+        text = orig = f.read()
+    m = re.search(r"^([ \t]*blur-background-exclude[ \t]*=[ \t]*\[)(.*?)(\][ \t]*;)", text, re.M | re.S)
+    if not m:
+        return
+    entries = [e.strip() for e in re.findall(r'"[^"]*"', m.group(2))]
+    keep = [e for e in entries if e.strip('"') not in BAR_BLUR_EXCLUDES]
+    if not blur:
+        keep = ['"%s"' % e for e in BAR_BLUR_EXCLUDES] + keep
+    text = text[:m.start()] + m.group(1) + " " + ", ".join(keep) + " " + m.group(3) + text[m.end():]
+    if text == orig:
+        return
+    if DRY:
+        print("write %s: bar blur %s" % (PICOM_CONF, "on" if blur else "off"))
+        return
+    with open(PICOM_CONF + ".i3tmp", "w") as f:
+        f.write(text)
+    os.replace(PICOM_CONF + ".i3tmp", PICOM_CONF)
+    if restart and not FILES_ONLY and subprocess.run(["pgrep", "-x", "picom"], capture_output=True).returncode == 0:
+        subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "picom"])
+        subprocess.Popen([os.path.join(CONFIG_DIR, "scripts", "Picom.sh")],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def apply_bar(settings):
     """Restart the bar so it picks up the new position / monitor choice."""
+    apply_bar_blur(settings)
     launch = os.path.expanduser("~/.config/polybar/launch.sh")
     if DRY:
         print("+", launch)
@@ -2508,7 +2584,7 @@ def refresh_files(settings):
     FILES_ONLY = True
     failed = []
     for step in (apply_cursor, apply_opacity, apply_themes, apply_terminal_font, apply_colors, apply_gaps, apply_apps,
-                 apply_gestures):
+                 apply_gestures, apply_bar_blur):
         try:
             step(settings)
         except Exception as e:  # noqa: BLE001 - one bad setting must not stop the others
@@ -2525,7 +2601,7 @@ def refresh_files(settings):
 def apply_all(settings):
     """Apply every saved setting. One failing step is reported but never stops the others."""
     for step in (apply_mouse, apply_cursor, apply_monitors, apply_opacity, apply_themes, apply_terminal_font, apply_colors,
-                 apply_gaps, apply_apps, apply_sound, apply_gestures):
+                 apply_gaps, apply_apps, apply_sound, apply_gestures, apply_bar_blur):
         try:
             step(settings)
         except Exception as e:  # noqa: BLE001 - login must not break on a bad setting
@@ -3316,6 +3392,45 @@ def launch_gui(confirm=True, tab=None):
     bar_space.connect("value-changed", snap_space)
     bar_space_row = row("Space between blocks", bar_space)
     ap.pack_start(bar_space_row, False, False, 0)
+    # the bar's own background: only the dark part around the blocks - the blocks keep their colours
+    bar_bg_mode = Gtk.ComboBoxText()
+    for key, label in BAR_BG_MODES:
+        bar_bg_mode.append(key, label)
+    bar_bg_mode.set_active_id(saved_choice["bg_mode"])
+    ap.pack_start(row("Bar background", bar_bg_mode), False, False, 0)
+    bar_bg_op = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 5)
+    bar_bg_op.set_digits(0)
+    bar_bg_op.set_value_pos(Gtk.PositionType.RIGHT)
+    bar_bg_op.set_value(saved_choice["bg_opacity"])
+    bar_bg_op.connect("format-value", lambda _s, v: "%d%%" % v)
+    bar_bg_op_row = row("Background opacity", bar_bg_op)
+    ap.pack_start(bar_bg_op_row, False, False, 0)
+    bar_bg_col = Gtk.ColorButton()
+    _c = Gdk.RGBA()
+    _c.parse(saved_choice["bg_color"])
+    bar_bg_col.set_rgba(_c)
+    bar_bg_col.set_title("Bar background colour")
+    bar_bg_black = Gtk.Button(label="Black")
+    bar_bg_black.connect("clicked", lambda *_: (_c.parse("#000000"), bar_bg_col.set_rgba(_c),
+                                                 bar_bg_col.emit("color-set")))
+    bg_col_box = Gtk.Box(spacing=8)
+    bg_col_box.pack_start(bar_bg_col, False, False, 0)
+    bg_col_box.pack_start(bar_bg_black, False, False, 0)
+    ap.pack_start(row("Background colour", bg_col_box), False, False, 0)
+    ap.pack_start(dim("Only the bar's own background changes - the blocks keep their colours. See-through and Blurred "
+                      "show your wallpaper behind the bar (the slider sets how much: 0% is clear glass, 100% solid); "
+                      "Blurred frosts it. Both need the compositor (picom) running. The colour works with every mode."),
+                  False, False, 0)
+
+    def bar_bg_now():
+        rgba = bar_bg_col.get_rgba()
+        color = "#%02x%02x%02x" % tuple(round(max(0, min(1, v)) * 255) for v in (rgba.red, rgba.green, rgba.blue))
+        mode = bar_bg_mode.get_active_id() or BAR_DEFAULT["bg_mode"]
+        return mode, int(round(bar_bg_op.get_value())), color
+
+    def bar_bg_preview():
+        mode, op, color = bar_bg_now()
+        return {"bar_bg": bar_bg_value(mode, op, color), "blur": mode == "blur"}
     bar_title = Gtk.Switch()
     bar_title.set_halign(Gtk.Align.START)
     bar_title.set_active(bar_saved.get("title") is True)
@@ -3339,7 +3454,7 @@ def launch_gui(confirm=True, tab=None):
             paint_bar(cr, area.get_allocated_width(), bar_style.get_active_id() or BAR_DEFAULT["style"],
                       bar_div.get_active_id() or BAR_DEFAULT["divider"], live_accent["v"], size, items,
                       title=bar_title.get_active(), bottom=bar_pos.get_active_id() == "bottom",
-                      spacing=clean_spacing(int(round(bar_space.get_value()))))
+                      spacing=clean_spacing(int(round(bar_space.get_value()))), **bar_bg_preview())
             return False
         bar_preview.connect("draw", draw_preview)
 
@@ -3373,6 +3488,15 @@ def launch_gui(confirm=True, tab=None):
     accent_listeners.append(refresh_bar_pictures)
     if have_cairo:
         bar_space.connect("value-changed", lambda *_: bar_preview.queue_draw())
+
+    def bar_bg_changed(*_):
+        bar_bg_op_row.set_sensitive((bar_bg_mode.get_active_id() or "solid") != "solid")
+        if have_cairo:
+            bar_preview.queue_draw()
+    bar_bg_mode.connect("changed", bar_bg_changed)
+    bar_bg_op.connect("value-changed", bar_bg_changed)
+    bar_bg_col.connect("color-set", bar_bg_changed)
+    bar_bg_changed()
     refresh_bar_pictures()
     ap.pack_start(dim("Every item on the right of the bar (Wi-Fi, Bluetooth, volume, brightness, stay-awake, night light, "
                       "battery, CPU, RAM, GPU, clock, power) can sit in its own block in your accent colour (Colors tab), "
@@ -4552,7 +4676,7 @@ def launch_gui(confirm=True, tab=None):
             cr, area.get_allocated_width(), bar_style.get_active_id() or BAR_DEFAULT["style"],
             bar_div.get_active_id() or BAR_DEFAULT["divider"], live_accent["v"], bar_size.get_active_id() or "large",
             (["playerctl"] if bar_media.get_active() else []) + preview_items, title=bar_title.get_active(),
-            spacing=clean_spacing(int(round(bar_space.get_value())))) and False)
+            spacing=clean_spacing(int(round(bar_space.get_value()))), **bar_bg_preview()) and False)
         accent_listeners.append(col_bar.queue_draw)
         cp.pack_start(col_bar, False, False, 0)
     else:
@@ -4718,6 +4842,7 @@ def launch_gui(confirm=True, tab=None):
                            "divider": bar_div.get_active_id() or BAR_DEFAULT["divider"],
                            "title": bar_title.get_active(), "media": bar_media.get_active(),
                            "spacing": clean_spacing(int(bar_space.get_value()))}
+        settings["bar"]["bg_mode"], settings["bar"]["bg_opacity"], settings["bar"]["bg_color"] = bar_bg_now()
         old_icon = wifi_tray_icon(settings)
         settings["network"] = {"tray_icon": wf_tray.get_active()}
         # the bar (launch.sh) and the gesture / Wi-Fi helpers read settings.json themselves: save it before them

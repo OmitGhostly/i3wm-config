@@ -27,7 +27,16 @@ command -v xrdb >/dev/null 2>&1 && printf 'Xft.antialias: 1\nXft.hinting: 1\nXft
 # the saved choices (Settings > Appearance > Bar): position, size (the font lines, in exact whole pixels so the text
 # is sharp), style, which items to show (an item the computer has no hardware for is left out). This also writes
 # style.ini: the colours, block ends and spacing of the chosen style
-eval "$(python3 "${XDG_CONFIG_HOME:-$HOME/.config}/i3/scripts/SettingsGUI.py" --bar-env 2>/dev/null)"
+# If that cannot be asked right now (in the middle of an update, a python problem), use what it said last time
+# instead of the defaults - so the bar never comes back different from how you left it.
+state="${XDG_STATE_HOME:-$HOME/.local/state}/i3wm-dots"; mkdir -p "$state"
+bar_env=$(python3 "${XDG_CONFIG_HOME:-$HOME/.config}/i3/scripts/SettingsGUI.py" --bar-env 2>/dev/null)
+if printf '%s\n' "$bar_env" | grep -q '^BAR_NAME='; then
+  printf '%s\n' "$bar_env" >"$state/bar-env.tmp" && mv -f "$state/bar-env.tmp" "$state/bar-env"
+elif [ -f "$state/bar-env" ]; then
+  bar_env=$(cat "$state/bar-env")
+fi
+eval "$bar_env"
 if [ "$BAR_BOTTOM" = true ]; then BORDER_BOTTOM=0; BORDER_TOP=1; else BORDER_BOTTOM=1; BORDER_TOP=0; fi
 case "$BAR_HEIGHT" in ''|*[!0-9]*) BAR_HEIGHT=38 ;; esac
 case "$BAR_NAME" in main|blocks) ;; *) BAR_NAME=blocks ;; esac
