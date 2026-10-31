@@ -642,15 +642,25 @@ XSETTINGSD_CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expandu
                                "xsettingsd.conf")
 XPROFILE_MARK = ("# >>> i3wm-dots cursor (Settings > Mouse > Mouse cursor) >>>",
                  "# <<< i3wm-dots cursor <<<")
+XRESOURCES_MARK = ("! >>> i3wm-dots cursor (Settings > Mouse > Mouse cursor) >>>",
+                   "! <<< i3wm-dots cursor <<<")
 
 
-def _set_block(text, lines):
-    """Put `lines` between the XPROFILE_MARK lines of a shell file (replacing an older copy of the block)."""
-    start, end = XPROFILE_MARK
+def _xcursor_resources():
+    """(theme, size) as the X resources say right now (what newly started programs - and i3 - use)."""
+    res = query(["xrdb", "-query"])
+    t = re.search(r"^Xcursor\.theme:\s*(\S+)", res, re.M)
+    z = re.search(r"^Xcursor\.size:\s*(\d+)", res, re.M)
+    return (t.group(1) if t else None, int(z.group(1)) if z else None)
+
+
+def _set_block(text, lines, marks=XPROFILE_MARK):
+    """Put `lines` between the two `marks` lines of a file (replacing an older copy of the block)."""
+    start, end = marks
     block = "\n".join([start] + lines + [end])
     pat = re.compile(r"^%s$.*?^%s$\n?" % (re.escape(start), re.escape(end)), re.M | re.S)
     if pat.search(text):
-        return pat.sub(block + "\n", text, count=1)
+        return pat.sub(lambda _m: block + "\n", text, count=1)        # (a function: no backslash processing)
     return (text + ("\n" if text and not text.endswith("\n") else "") + block + "\n")
 
 
@@ -696,13 +706,28 @@ def apply_cursor(settings):
             text = f.read()
     except (OSError, UnicodeDecodeError):
         text = ""
-    _write_if_changed(xprofile, _set_block(text, ["export XCURSOR_THEME=%s" % shlex.quote(theme),
-                                                  "export XCURSOR_SIZE=%d" % size]))
+    _write_if_changed(xprofile, _set_block(text, [
+        "export XCURSOR_THEME=%s" % shlex.quote(theme), "export XCURSOR_SIZE=%d" % size,
+        "command -v xrdb >/dev/null 2>&1 && printf 'Xcursor.theme: %s\\nXcursor.size: %s\\n' \"$XCURSOR_THEME\" "
+        "\"$XCURSOR_SIZE\" | xrdb -merge"]))
     _write_if_changed(os.path.join(_CFG_HOME, "environment.d", "90-i3dots-cursor.conf"),
                       "XCURSOR_THEME=%s\nXCURSOR_SIZE=%d\n" % (theme, size))
+    # ...and the X resources at the start of the next session, before i3 starts: i3 loads its cursor only once,
+    # when it starts, and every window that does not pick its own cursor (GTK windows like this settings window,
+    # most pop-ups) shows i3's - so i3 must start with the right size, or the pointer changes size over them
+    xres = os.path.expanduser("~/.Xresources")
+    try:
+        with open(xres) as f:
+            rtext = f.read()
+    except (OSError, UnicodeDecodeError):
+        rtext = ""
+    _write_if_changed(xres, _set_block(rtext, ["Xcursor.theme: %s" % theme, "Xcursor.size: %d" % size],
+                                       XRESOURCES_MARK))
+    changed = False
     if DRY:
         print("+ xrdb -merge  (Xcursor.theme: %s, Xcursor.size: %d)" % (theme, size))
     elif not FILES_ONLY:
+        changed = _xcursor_resources() != (theme, size)
         try:
             subprocess.run(["xrdb", "-merge"], input="Xcursor.theme: %s\nXcursor.size: %d\n" % (theme, size),
                            text=True, capture_output=True, timeout=10)
@@ -714,6 +739,10 @@ def apply_cursor(settings):
     xs = os.path.join(CONFIG_DIR, "scripts", "XSettings.sh")             # open GTK apps follow at once
     if os.path.exists(xs):
         run(["bash", xs])
+    if changed:
+        # i3 picks the new cursor up only when it (re)starts: restart it in place (windows stay as they are, like
+        # SUPER+SHIFT+R). Not needed at login when the session already started with these values (~/.Xresources).
+        run(["i3-msg", "-q", "restart"])
 
 
 # ------------------------------------------------------------------ window opacity (picom)

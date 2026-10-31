@@ -402,7 +402,8 @@ if [ "$do_wallpapers" -eq 1 ]; then
 fi
 
 # first login picks a wallpaper and generates colors (a re-install or update keeps your wallpaper)
-[ "$first_install" -eq 1 ] && run rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/i3/first-run-done"
+[ "$first_install" -eq 1 ] && run rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/i3/first-run-done" \
+  "${XDG_STATE_HOME:-$HOME/.local/state}/i3wm-dots/first-run-done"
 
 # ---- updates: keep the config up to date with the repo, together with system updates ---------------
 # (i3dots-update = ~/.config/i3/scripts/Update.sh; the pacman / dnf / apt hook asks it to run after a system update)

@@ -10,6 +10,8 @@ side, a tall one top and bottom. Opening windows one after another fills the scr
 Tabbed / stacked containers (SUPER+ALT+2/3), floating and fullscreen windows are left alone.
 Turn it on or off with SUPER+ALT+T, or in Settings > Appearance > Window tiling.
 
+When a screen is plugged in, unplugged or rearranged it redraws the wallpaper and the bars for the new layout.
+
 It also keeps the focus ring (the border in your accent colour) on every window: apps that draw their own title
 bar - Chrome, Electron apps like VS Code, Discord, Spotify - can tell i3 "no border" after they have opened, which
 i3 obeys and the config's `for_window [all] border pixel 3` cannot catch (i3 does not even announce it, so every
@@ -42,6 +44,8 @@ RECONNECT_FOR = 30                       # seconds to wait for i3 to come back (
 RING_WIDTH = 3                           # the border width the i3 config gives every window
 RING_RECHECK = (0.4, 1.2, 3.0, 6.0)      # seconds after a window opens to look again (apps drop it a bit later)
 RING_POLL = 1.0                          # seconds between looks at every window (an app can drop it at any time)
+OUTPUT_EVENT = 1                         # i3 IPC event: a screen was plugged in, unplugged or rearranged
+SCREENS_SETTLE = 1.5                     # seconds to wait after the last screen change before redrawing
 
 
 # ------------------------------------------------------------------ mode (stored in settings.json)
@@ -157,6 +161,19 @@ def keep_ring(cmd, con):
     cmd.request(RUN_COMMAND, "[con_id=%d] border pixel %d" % (con["id"], width))
 
 
+def screens_changed():
+    """A screen was plugged in, unplugged or moved: draw the wallpaper for the new layout (feh draws it for the
+    layout at the moment it runs - a later change leaves it misaligned) and give every screen its bar."""
+    for cmd in ([os.path.join(CONFIG_DIR, "scripts", "Wallpaper.sh"), "--restore"],
+                [os.path.join(os.path.dirname(CONFIG_DIR), "polybar", "launch.sh")]):
+        if os.path.exists(cmd[0]):
+            try:
+                subprocess.Popen(cmd, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
+
+
 def all_windows(node):
     """Every window container below `node` (tiled and floating)."""
     if node.get("window"):
@@ -211,24 +228,32 @@ def run():
             if not path:
                 raise ConnectionError("i3 is not running")
             events, cmd = IPC(path), IPC(path)
-            events.send(SUBSCRIBE, json.dumps(["window"]))
+            events.send(SUBSCRIBE, json.dumps(["window", "output"]))
             events.recv()                               # {"success": true}
             last_ok = time.monotonic()
             retile(cmd)
             later = []                                  # times to look at the windows again (just after one opened)
             checked = 0.0                               # when every window was last looked at
+            screens_due = None                          # when to redraw after a screen change
             while True:
                 now = time.monotonic()
+                if screens_due is not None and now >= screens_due:
+                    screens_due = None
+                    screens_changed()
                 if later and min(later) <= now or now - checked >= RING_POLL:
                     later = [t for t in later if t > now]
                     check_all_rings(cmd)
                     checked = last_ok = now
-                wait = min([max(0.0, checked + RING_POLL - now)] + [max(0.0, t - now) for t in later])
+                wait = min([max(0.0, checked + RING_POLL - now)] + [max(0.0, t - now) for t in later]
+                           + ([max(0.0, screens_due - now)] if screens_due is not None else []))
                 ready, _, _ = select.select([events.sock], [], [], wait)
                 if not ready:
                     continue
                 mtype, ev = events.recv()
                 if not (mtype & EVENT_BIT and isinstance(ev, dict)):
+                    continue
+                if mtype & ~EVENT_BIT == OUTPUT_EVENT:
+                    screens_due = time.monotonic() + SCREENS_SETTLE     # (a burst of changes counts as one)
                     continue
                 change, con = ev.get("change"), ev.get("container")
                 if change in ("new", "focus", "title", "floating", "move", "fullscreen_mode"):

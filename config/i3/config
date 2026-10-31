@@ -424,7 +424,8 @@ exec_always --no-startup-id ~/.config/i3/scripts/XSettings.sh
 exec --no-startup-id xss-lock --transfer-sleep-lock -- ~/.config/i3/scripts/LockScreen.sh
 exec --no-startup-id ~/.config/i3/scripts/ClipDaemon.sh
 # saved mouse / monitor settings (written by the settings window), then re-draw the bar for the new layout
-exec --no-startup-id sh -c '~/.config/i3/scripts/SettingsGUI.py --apply; sleep 1; ~/.config/polybar/launch.sh'
+# (the wallpaper is drawn again once the screens are set up, so two monitors never get a misaligned picture)
+exec --no-startup-id sh -c '~/.config/i3/scripts/SettingsGUI.py --apply; ~/.config/i3/scripts/Wallpaper.sh --restore; sleep 1; ~/.config/polybar/launch.sh'
 exec --no-startup-id ~/.config/i3/scripts/Nightlight.sh init
 # game mode never survives a logout (its gaps/compositor changes are gone too)
 exec --no-startup-id rm -f ~/.cache/i3/gamemode
